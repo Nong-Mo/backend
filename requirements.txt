@@ -8,4 +8,4 @@ google-cloud-vision==3.4.4
 # 새롭게 추가
 uvicorn==0.34.0
 bcrypt==4.2.1
-pymongo==4.10.1
+motor==3.6.0
