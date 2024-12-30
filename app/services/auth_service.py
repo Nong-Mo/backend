@@ -1,6 +1,7 @@
 from passlib.context import CryptContext
 from app.models.user import UserCreate
 from app.core.config import db
+from fastapi import HTTPException
 
 # 비밀번호 암호화에 사용될 패스워드 컨텍스트
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -40,18 +41,19 @@ def is_valid_password(password: str) -> bool:
 
 async def create_user(user: UserCreate):
     if user.password != user.password_confirmation:
-        raise ValueError("Passwords do not match")
+        raise HTTPException(status_code=400, detail="Passwords do not match")
 
     # 비밀번호 복잡성 검증
     if not is_valid_password(user.password):
-        raise ValueError(
-            "Password must be 8-20 characters long, contain at least two character types (uppercase, lowercase, numbers, special characters), and no spaces."
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be 8-20 characters long, contain at least two character types (uppercase, lowercase, numbers, special characters), and no spaces."
         )
 
     # 중복 이메일 체크
     existing_user = await users_collection.find_one({"email": user.email})
     if existing_user:
-        raise ValueError("Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     hashed_password = await hash_password(user.password)
     new_user = {
@@ -62,4 +64,4 @@ async def create_user(user: UserCreate):
     try:
         await users_collection.insert_one(new_user)
     except Exception as e:  # 만약 이미 존재하는 키(중복)로 인한 예외가 발생하면 ValueError로 처리
-        raise ValueError("Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
