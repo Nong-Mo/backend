@@ -1,7 +1,11 @@
 from passlib.context import CryptContext
 from app.models.user import UserCreate
-from app.core.config import db
+from app.core.config import db, SECRET_KEY, ALGORITHM
 from fastapi import HTTPException
+from datetime import datetime, timezone, timedelta
+from jose import jwt
+
+datetime.datetime.now(timezone.utc)
 
 # 비밀번호 암호화에 사용될 패스워드 컨텍스트
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -68,3 +72,14 @@ async def create_user(user: UserCreate):
         await users_collection.insert_one(new_user)
     except Exception as e:  # 만약 이미 존재하는 키(중복)로 인한 예외가 발생하면 ValueError로 처리
         raise HTTPException(status_code=409, detail="Email already registered")
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    # JWT 토큰 생성
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
