@@ -1,7 +1,11 @@
 from passlib.context import CryptContext
-from app.models.user import UserCreate
-from app.core.config import db
+from app.models.user import UserCreate, UserLogin
+from app.core.config import db, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from fastapi import HTTPException
+from datetime import datetime, timezone, timedelta
+from jose import jwt
+
+datetime.datetime.now(timezone.utc)
 
 # 비밀번호 암호화에 사용될 패스워드 컨텍스트
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -12,6 +16,9 @@ users_collection = db["users"]
 async def hash_password(password: str) -> str:
     hashed_password = pwd_context.hash(password)
     return hashed_password
+
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
 
 def is_valid_password(password: str) -> bool:
     """
@@ -65,3 +72,29 @@ async def create_user(user: UserCreate):
         await users_collection.insert_one(new_user)
     except Exception as e:  # 만약 이미 존재하는 키(중복)로 인한 예외가 발생하면 ValueError로 처리
         raise HTTPException(status_code=409, detail="Email already registered")
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    # JWT 토큰 생성
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def login_user(user: UserLogin):
+    existing_user = await users_collection.find_one({"email": user.email})
+    if not existing_user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not await verify_password(user.password, existing_user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # JWT 토큰 발급
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}

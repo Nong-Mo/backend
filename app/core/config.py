@@ -13,3 +13,8 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 # 비동기 MongoDB 클라이언트 생성
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DATABASE_NAME]
+
+# JWT 관련 설정 값
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
