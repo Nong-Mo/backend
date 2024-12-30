@@ -5,3 +5,7 @@ class UserCreate(BaseModel):
     nickname: str
     password: str
     password_confirmation: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
