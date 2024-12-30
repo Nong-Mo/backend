@@ -1,6 +1,6 @@
 from passlib.context import CryptContext
-from app.models.user import UserCreate
-from app.core.config import db, SECRET_KEY, ALGORITHM
+from app.models.user import UserCreate, UserLogin
+from app.core.config import db, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from fastapi import HTTPException
 from datetime import datetime, timezone, timedelta
 from jose import jwt
@@ -83,3 +83,18 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+async def login_user(user: UserLogin):
+    existing_user = await users_collection.find_one({"email": user.email})
+    if not existing_user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not await verify_password(user.password, existing_user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # JWT 토큰 발급
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
