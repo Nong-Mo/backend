@@ -13,6 +13,9 @@ async def hash_password(password: str) -> str:
     hashed_password = pwd_context.hash(password)
     return hashed_password
 
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
 def is_valid_password(password: str) -> bool:
     """
         비밀번호가 유효한지 검사하는 함수입니다.
