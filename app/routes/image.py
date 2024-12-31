@@ -8,11 +8,11 @@ router = APIRouter()
 image_service = ImageService()
 
 @router.post("/images/upload", response_model=ImageUploadResponse)
-async def upload_images(request: ImageUploadRequest, files: List[UploadFile], user_info: dict = Depends(verify_jwt)):
+async def upload_images(request: ImageUploadRequest, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
     """
     이미지를 업로드하고 OCR을 수행하여 결과를 반환
     """
-    result = await image_service.process_images(title=request.title, files=files, user_info=user_info)
+    result = await image_service.process_images(title=request.title, files=files, user_id=user_id)
     return ImageUploadResponse(
         file_id=result.file_id,
         message="Images processed and uploaded successfully."
