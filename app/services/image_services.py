@@ -5,6 +5,7 @@ from fastapi import UploadFile, HTTPException, status
 from app.models.image import ImageMetadata, ImageDocument
 from app.core.config import NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME
 import boto3
+import botocore
 import requests
 from datetime import datetime
 import shutil
