@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from datetime import datetime, timezone, timedelta
 from jose import jwt
 
-datetime.datetime.now(timezone.utc)
+datetime.now(timezone.utc)
 
 # 비밀번호 암호화에 사용될 패스워드 컨텍스트
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
