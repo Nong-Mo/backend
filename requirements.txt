@@ -15,3 +15,4 @@ python-jose==3.3.0
 boto3==1.35.90
 requests==2.32.3
 botocore==1.35.90
+python-multipart==0.0.20
