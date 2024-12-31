@@ -12,6 +12,8 @@ import shutil
 from jose import jwt  # JWT 처리 라이브러리
 from jose.exceptions import JWTError
 from fastapi.security import OAuth2PasswordBearer
+import time
+import json
 
 s3 = boto3.client(
     's3',
@@ -57,17 +59,10 @@ class ImageService:
                         content = await file.read()
                         f.write(content)
                 except (IOError, ValueError) as e:
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to read file: {e}")
+                    raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
 
-                # 네이버 CLOVA OCR 호출 및 결과 처리
-                text, pdf_file = self._call_clova_ocr(file_path)
-
-                # S3에 PDF 업로드 (PDF 경로 설정)
-                try:
-                    s3_key_prefix = f"{file_id}/{file.filename}"
-                    s3.upload_file(pdf_file, S3_BUCKET_NAME, f"{s3_key_prefix}.pdf")
-                except botocore.exceptions.ClientError as e:
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload file to S3: {e}")
+                # 네이버 CLOVA OCR 호출 및 결과 처리 (텍스트만 추출)
+                text = await self._call_clova_ocr(file)
 
                 # 이미지 파일 메타데이터 저장
                 processed_files.append(ImageMetadata(
@@ -85,35 +80,55 @@ class ImageService:
             )
             return image_doc
 
-        except requests.exceptions.RequestException as e:
-            # OCR 외부 API에서 오류 발생시 처리
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"External API Error: {str(e)}"
-            )
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
             # 업로드 후 임시 디렉토리 삭제
             shutil.rmtree(upload_dir)
 
-    def _call_clova_ocr(self, image_path):
-        headers = {'X-OCR-SECRET': NAVER_CLOVA_OCR_SECRET}
-        # 이미지 파일을 열어 CLOVA OCR에 전송
+    async def _call_clova_ocr(self, file: UploadFile):
+        """
+        OCR API를 호출하여 이미지에서 텍스트를 추출합니다.
+
+        Args:
+            file (UploadFile): 업로드할 이미지 파일
+
+        Returns:
+            list: 추출된 텍스트 목록
+        """
         try:
-            with open(image_path, 'rb') as file:
-                files = {'file': file}
-                response = requests.post(NAVER_CLOVA_OCR_API_URL, headers=headers, files=files)
-            response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:  # API 키 오류 등
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid request to OCR API: {e}")
-            else:  # 서버 오류 등
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to call OCR API: {e}")
-        except requests.exceptions.RequestException as e:  # 네트워크 오류 등
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to connect to OCR API: {e}")
+            contents = await file.read()
+            request_json = {
+                'images': [
+                    {
+                        'format': 'jpg',  # 이미지 형식에 맞게 수정해야 합니다.
+                        'name': file.filename  # 파일 이름을 동적으로 설정합니다.
+                    }
+                ],
+                'requestId': str(uuid.uuid4()),
+                'version': 'V2',
+                'timestamp': int(round(time.time() * 1000))
+            }
 
-        data = response.json()
+            payload = {'message': json.dumps(request_json).encode('UTF-8')}
+            files = [
+                ('file', (file.filename, contents, 'image/jpeg'))  # 파일 이름을 동적으로 설정합니다.
+            ]
+            headers = {
+                'X-OCR-SECRET': NAVER_CLOVA_OCR_SECRET
+            }
 
-        # OCR 텍스트 및 PDF 반환
-        text = " ".join(field['inferText'] for field in data['images'][0]['fields'])
-        pdf_file = f"{image_path}.pdf"  # OCR API에서 반환된 PDF 파일 경로
-        return text, pdf_file
+            response = requests.request("POST", NAVER_CLOVA_OCR_API_URL, headers=headers, data=payload, files=files)
+            response.raise_for_status()  # 에러 발생 시 예외 발생
+
+            extracted_texts = []
+            for i in response.json()['images'][0]['fields']:
+                text = i['inferText']
+                extracted_texts.append(text)
+
+            return extracted_texts
+
+        except Exception as e:
+            return {"error": str(e)}
