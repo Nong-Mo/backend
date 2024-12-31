@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routes import auth
+from app.routes import auth, image
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="AtoD")
@@ -14,3 +14,6 @@ app.add_middleware(
 
 # 인증 관련 라우트 등록
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
+
+# 이미지 관련 라우트 등록
+app.include_router(image.router)
