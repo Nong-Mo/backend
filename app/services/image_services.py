@@ -1,14 +1,17 @@
 import os
 import uuid
 from typing import List
-from fastapi import UploadFile, HTTPException, status
+from fastapi import UploadFile, HTTPException, status, Depends, Header
 from app.models.image import ImageMetadata, ImageDocument
-from app.core.config import NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME
+from app.core.config import NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME, SECRET_KEY, ALGORITHM
 import boto3
 import botocore
 import requests
 from datetime import datetime
 import shutil
+from jose import jwt  # JWT 처리 라이브러리
+from jose.exceptions import JWTError
+from fastapi.security import OAuth2PasswordBearer
 
 s3 = boto3.client(
     's3',
@@ -16,10 +19,32 @@ s3 = boto3.client(
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# JWT 인증 검증 함수
+async def verify_jwt(token: str = Header(...)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id: str = payload.get("sub")  # 사용자 ID 추출
+        if user_id is None:
+            raise credentials_exception
+        # 여기에서 사용자 정보를 가져오는 로직을 추가할 수 있습니다.
+        # 예: user = await get_user_by_id(user_id)
+    except JWTError:  # JWT 검증 실패 시 예외 처리
+        raise credentials_exception
+    return user_id  # 사용자 ID 반환
+
+
 class ImageService:
-    async def process_images(self, title: str, files: List[UploadFile]):
+    async def process_images(self, title: str, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
         file_id = str(uuid.uuid4())
-        upload_dir = f"/tmp/{file_id}"
+        # 사용자 ID를 포함한 업로드 경로 생성
+        upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
 
         processed_files = []
