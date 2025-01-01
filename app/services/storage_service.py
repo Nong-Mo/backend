@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from app.core.config import db
-from app.schemas.storage import StorageInfo, StorageListResponse
+from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse
 from typing import List
 
 class StorageService:
@@ -80,3 +80,5 @@ class StorageService:
                 status_code=500, 
                 detail=f"Failed to fetch storage list: {str(e)}"
             ) 
+        
+    # async def get_storage_files(self, user_email:  str, storage_name: str) -> StorageDetailResponse:
