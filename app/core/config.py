@@ -27,3 +27,10 @@ NAVER_CLOVA_OCR_API_URL = os.getenv("NAVER_CLOVA_OCR_API_URL")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+
+# Naver Cloud Platfrom API key
+NCP_CLIENT_ID = os.getenv("NCP_CLIENT_ID")
+NCP_CLIENT_SECRET = os.getenv("NCP_CLIENT_SECRET")
+
+# TTS API URL
+NCP_TTS_API_URL = "https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts"
