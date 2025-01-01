@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from app.core.config import db
-from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse
+from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail
 from typing import List
 
 class StorageService:
@@ -81,4 +81,38 @@ class StorageService:
                 detail=f"Failed to fetch storage list: {str(e)}"
             ) 
         
-    # async def get_storage_files(self, user_email:  str, storage_name: str) -> StorageDetailResponse:
+    async def get_storage_files(self, user_email:  str, storage_name: str) -> StorageDetailResponse:
+        try:
+            # 해당 사용자의 특정 보관함 파일들 조회
+            files = await self.images_collection.find({
+                "user_email": user_email,
+                "storageName": storage_name
+            }).to_list(None)
+
+            if not files:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = f"Storage '{storage_name}' not found or empty"
+                )
+            
+            file_list = [
+                FileDetail(
+                    fileId=str(file["_id"]),
+                    fileName=file["fileName"],
+                    upLoadDate=file["created_at"]
+                )
+                for file in files
+            ]
+
+            return StorageDetailResponse(
+                storageName=storage_name,
+                fileList = file_list
+            )
+        
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch storage files: {str(e)}"
+            )
