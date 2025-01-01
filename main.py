@@ -17,3 +17,4 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 # 이미지 관련 라우트 등록
 app.include_router(image.router)
+
