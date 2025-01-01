@@ -1,0 +1,47 @@
+name: Bug Report
+description: 버그 수정관련🐞.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: bug-desc
+    attributes:
+      label: 버그 설명
+      description: 발생한 버그에 대한 설명
+      placeholder: ex) 비밀번호 찾기 버튼이 동작하지 않음.
+    validations:
+      required: true
+  - type: textarea
+    id: bug-flow
+    attributes:
+      label: 버그 발생 경로
+      description: 버그가 발생한 경로에 대한 설명
+      placeholder: |
+        ex) 
+        1. 로그인 화면 접속
+        2. 아이디/비밀번호 찾기 클릭
+        - 화면이 넘어가지 않음
+    validations: 
+      required: true
+  - type: input
+    attributes:
+      label: 실행 환경
+      description: 해당 소프트웨어를 실행시킨 운영체제, 하드웨어 플랫폼 등 실행 환경 정보
+      placeholder: ex) 모바일-안드로이드 , 윈도우 등
+    validations: 
+      required: true
+  - type: textarea
+    attributes:
+      label: 버그 발생시 이미지(권장)
+      description: 버그가 발생했을때 화면 스크린샷
+  - type: textarea
+    id: logs
+    attributes:
+      label: 오류 로그
+      description: 관련 오류 로그 첨부. 해당 로그는 자동으로 코드로 들어가므로 backtick(`)을 추가하지말고 텍스트만 입력
+      render: shell
+  - type: textarea
+    id: bug-etc
+    attributes:
+      label: 기타 사항
+      description: 기타 오류 관련 정보
