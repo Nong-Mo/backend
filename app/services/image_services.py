@@ -31,7 +31,7 @@ async def verify_jwt(token: str = Header(...)):
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=ALGORITHM)
         user_id: str = payload.get("sub")  # 사용자 ID 추출
         if user_id is None:
             raise credentials_exception
