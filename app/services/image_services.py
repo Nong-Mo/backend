@@ -19,6 +19,14 @@ import aiohttp
 import urllib.parse
 import urllib.request
 import ssl
+import logging
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 최대 허용 파일 크기: 5MB
+MIN_FILE_SIZE = 1
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -66,27 +74,35 @@ class ImageService:
         try:
             for file in files:
                 file_path = os.path.join(upload_dir, file.filename)
-                # 파일을 로컬에 저장
                 try:
+                    # 파일 내용을 읽어 변수에 저장
+                    content = await file.read()
+                    if not content:  # 파일 크기가 0인 경우
+                        print(f"[Error] Empty file detected: {file.filename} (Size: 0 bytes)")
+                        raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
+
+                    # 파일 크기와 콘텐츠 유형 로깅
+                    print(f"Processing file: {file.filename} (Size: {len(content)} bytes)")
+
                     with open(file_path, "wb") as f:
-                        content = await file.read()
                         f.write(content)
+
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
 
-                # 네이버 CLOVA OCR 호출 및 결과 처리 (텍스트만 추출)
-                text = await self._call_clova_ocr(file)
-                # 디버깅
-                #print("text", text)
+                    # 네이버 CLOVA OCR 호출 및 결과 처리 (텍스트만 추출)
+                try:
+                    print('file', file)
+                    text = await self._call_clova_ocr(file)
+                except aiohttp.ClientError as e:
+                    raise HTTPException(status_code=500, detail=f"CLOVA OCR API 호출 실패: {e}")
+
                 combined_text = " ".join(text)
-                print(f"Extracted Text: {combined_text}")
 
                 try:
                     await self._call_naver_tts(combined_text, file.filename, title)
                 except aiohttp.ClientError as e:
                     raise HTTPException(status_code=500, detail=f"TTS API 호출 실패: {e}")
-
-                print("TTS 생성 완료")
 
                 # 이미지 파일 메타데이터 저장
                 processed_files.append(ImageMetadata(
@@ -109,26 +125,35 @@ class ImageService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
-            # 업로드 후 임시 디렉토리 삭제
-            shutil.rmtree(upload_dir)
+            shutil.rmtree(upload_dir, ignore_errors=True)
 
     async def _call_clova_ocr(self, file: UploadFile):
         """
         OCR API를 호출하여 이미지에서 텍스트를 추출합니다.
-
         Args:
             file (UploadFile): 업로드할 이미지 파일
-
         Returns:
             list: 추출된 텍스트 목록
         """
+        print('file parameter in call_clova_ocr', file)
         try:
+            file.file.seek(0)
             contents = await file.read()
+            print('contents 입니다.', contents)
+            file_size = len(contents)
+            print('file_size', file_size)
+            # 파일 크기 확인
+            if file_size < MIN_FILE_SIZE or file_size > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"파일 크기가 허용된 범위를 벗어났습니다. 최소 {MIN_FILE_SIZE}바이트, 최대 {MAX_FILE_SIZE // (1024 * 1024)}MB 파일만 업로드할 수 있습니다."
+                )
+
             request_json = {
                 'images': [
                     {
-                        'format': 'jpg',  # 이미지 형식에 맞게 수정해야 합니다. (리팩토링 현재 jpg만 받음)
-                        'name': file.filename  # 파일 이름을 동적으로 설정합니다.
+                        'format': file.content_type.split('/')[1],  # Content-Type에서 동적으로 format 추출
+                        'name': file.filename
                     }
                 ],
                 'requestId': str(uuid.uuid4()),
@@ -138,24 +163,33 @@ class ImageService:
 
             payload = {'message': json.dumps(request_json).encode('UTF-8')}
             files = [
-                ('file', (file.filename, contents, 'image/jpeg'))  # 파일 이름을 동적으로 설정합니다.
+                ('file', (file.filename, contents, file.content_type))  # Content-Type 동적으로 설정
             ]
             headers = {
                 'X-OCR-SECRET': NAVER_CLOVA_OCR_SECRET
             }
-
             response = requests.request("POST", NAVER_CLOVA_OCR_API_URL, headers=headers, data=payload, files=files)
-            response.raise_for_status()  # 에러 발생 시 예외 발생
+            response.raise_for_status()
+
+            response_json = response.json()
 
             extracted_texts = []
-            for i in response.json()['images'][0]['fields']:
-                text = i['inferText']
-                extracted_texts.append(text)
+            for image in response_json.get('images', []):  # 'images' 키가 없을 경우를 대비
+                for field in image.get('fields', []):  # 'fields' 키가 없을 경우를 대비
+                    text = field.get('inferText', '')  # 'inferText' 키가 없을 경우를 대비
+                    extracted_texts.append(text)
 
             return extracted_texts
 
+        except requests.exceptions.HTTPError as e:
+            raise HTTPException(status_code=e.response.status_code,
+                                detail=f"HTTP 오류 발생: {e.response.status_code} - {e.response.text}")
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"요청 오류 발생: {e}")
+        except KeyError as e:
+            raise HTTPException(status_code=500, detail=f"JSON 파싱 오류 발생: {e}")
         except Exception as e:
-            return {"error": str(e)}
+            raise HTTPException(status_code=500, detail=f"알 수 없는 오류 발생: {e}")
 
     async def _call_naver_tts(self, text: str, user_id: str, title: str):
         try:
