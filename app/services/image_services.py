@@ -20,12 +20,13 @@ import urllib.parse
 import urllib.request
 import ssl
 import logging
+import asyncio
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 최대 허용 파일 크기: 5MB
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 최대 허용 파일 크기: 5MB
 MIN_FILE_SIZE = 1
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -82,7 +83,7 @@ class ImageService:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
                     # 파일 크기와 콘텐츠 유형 로깅
-                    print(f"Processing file: {file.filename} (Size: {len(content)} bytes)")
+                    #print(f"Processing file: {file.filename} (Size: {len(content)} bytes)")
 
                     with open(file_path, "wb") as f:
                         f.write(content)
@@ -92,7 +93,7 @@ class ImageService:
 
                     # 네이버 CLOVA OCR 호출 및 결과 처리 (텍스트만 추출)
                 try:
-                    print('file', file)
+                    #print('file', file)
                     text = await self._call_clova_ocr(file)
                 except aiohttp.ClientError as e:
                     raise HTTPException(status_code=500, detail=f"CLOVA OCR API 호출 실패: {e}")
@@ -135,13 +136,13 @@ class ImageService:
         Returns:
             list: 추출된 텍스트 목록
         """
-        print('file parameter in call_clova_ocr', file)
+        #print('file parameter in call_clova_ocr', file)
         try:
             file.file.seek(0)
             contents = await file.read()
-            print('contents 입니다.', contents)
+            #print('contents 입니다.', contents)
             file_size = len(contents)
-            print('file_size', file_size)
+            #print('file_size', file_size)
             # 파일 크기 확인
             if file_size < MIN_FILE_SIZE or file_size > MAX_FILE_SIZE:
                 raise HTTPException(
@@ -191,9 +192,9 @@ class ImageService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"알 수 없는 오류 발생: {e}")
 
-    async def _call_naver_tts(self, text: str, user_id: str, title: str):
+    # 메소드 시그니처 수정
+    async def _call_naver_tts(self, text: str, filename: str, title: str):
         try:
-            # SSL 검증 컨텍스트 생성
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
@@ -213,23 +214,28 @@ class ImageService:
                 "X-NCP-APIGW-API-KEY": NCP_CLIENT_SECRET
             }
 
-            # SSL 컨텍스트를 포함하여 요청
             request = urllib.request.Request(NCP_TTS_API_URL, data, headers)
-            with urllib.request.urlopen(request, context=ssl_context) as response:
-                response_body = response.read()
 
-            file_id = str(uuid.uuid4())
-            s3_key = f"tts/{user_id}/{title}/{file_id}.mp3"
-
-            self.s3_client.put_object(
-                Bucket=S3_BUCKET_NAME,
-                Key=s3_key,
-                Body=response_body,
-                ContentType='audio/mp3'
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(request, context=ssl_context).read()
             )
 
-            s3_url = f"s3://{S3_BUCKET_NAME}/{s3_key}"
-            return s3_url
+            file_id = str(uuid.uuid4())
+            s3_key = f"tts/{filename}/{title}/{file_id}.mp3"
+
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=response,
+                    ContentType='audio/mp3'
+                )
+            )
+
+            return f"s3://{S3_BUCKET_NAME}/{s3_key}"
 
         except Exception as e:
-            raise Exception(f"Failed to generate and upload TTS: {str(e)}")
+            logger.error(f"TTS Error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"TTS 생성 실패: {str(e)}")
