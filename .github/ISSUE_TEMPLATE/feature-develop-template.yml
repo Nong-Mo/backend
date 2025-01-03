@@ -1,30 +1,21 @@
 name: Feature Development
 description: 개발 관련 이슈 사항
-title: "[Feature]: "
-labels: ["feature"]
+title: '[Feature]: '
+labels: ['feature']
 body:
   - type: textarea
     id: feature-title
     attributes:
       label: 요약
       description: 작업 중인 사항 입력
-      placeholder: ex) 이전 운동기록 불러오기 기능
     validations:
       required: true
-  - type: textarea
-    id: refer-issues
-    attributes:
-      label: 관련 이슈
-      description: 관련된 이슈 목록
   - type: textarea
     id: feature-detail
     attributes:
       label: 기능 관련 상세 설명
       description: 작업 중인 사항에 대한 상세한 설명
-      placeholder: |
-        ex) 
-        현재 작업 진행상황, 진행중 생겼던 이슈, 해결 방법 등
-    validations: 
+    validations:
       required: true
   - type: textarea
     attributes:
