@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from app.core.config import db
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.schemas.storage import StorageInfo, StorageListResponse
 from typing import List
 
@@ -8,10 +8,26 @@ class StorageService:
     사용자의 보관함 정보를 관리하는 서비스 클래스
     MongoDB와 상호작용하여 보관함 관련 데이터를 처리합니다.
     """
-    def __init__(self):
-        # MongoDB 컬렉션 초기화
-        self.users_collection = db["users"]        # 사용자 정보가 저장된 컬렉션
-        self.images_collection = db["images"]      # 이미지 정보가 저장된 컬렉션
+    def __init__(self, db: AsyncIOMotorDatabase):
+        """
+        데이터베이스 의존성을 주입받는 생성자
+        
+        Args:
+            db: AsyncIOMotorDatabase - MongoDB 데이터베이스 인스턴스
+        """
+        self.db = db
+        self.users_collection = db["users"]
+        self.images_collection = db["images"]
+
+    @classmethod
+    async def create(cls, db: AsyncIOMotorDatabase):
+        """
+        서비스 인스턴스를 생성하는 팩토리 메서드
+        
+        Args:
+            db: AsyncIOMotorDatabase - MongoDB 데이터베이스 인스턴스
+        """
+        return cls(db)
 
     async def get_storage_list(self, user_email: str) -> StorageListResponse:
         """

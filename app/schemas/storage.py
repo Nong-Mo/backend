@@ -18,4 +18,3 @@ class FileDetail(BaseModel):
 class StorageDetailResponse(BaseModel):
     storageName: str # 보관함 이름
     fileList: List[FileDetail] # FileDetail 객체들의 리스트
-
