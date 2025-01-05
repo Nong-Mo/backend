@@ -1,6 +1,5 @@
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from app.core.config import db
 from app.schemas.storage import StorageInfo, StorageListResponse
 from typing import List
 
