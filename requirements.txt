@@ -3,4 +3,17 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 pytest==8.3.4
 httpx==0.28.1
-google-cloud-vision==3.4.4 
+google-cloud-vision==3.4.4
+
+# 새롭게 추가
+uvicorn==0.34.0
+bcrypt==4.2.1
+motor==3.6.0
+email-validator==2.2.0
+passlib==1.7.4
+python-jose==3.3.0
+boto3==1.35.90
+requests==2.32.3
+botocore==1.35.90
+python-multipart==0.0.20
+aiohttp==3.11.11
