@@ -66,19 +66,10 @@ class ImageService:
 
     async def create_or_update_storage(self, user_id: str, title: str, file_count: int) -> str:
         """보관함 생성 또는 업데이트"""
-        # 먼저 이메일로 사용자 조회
-        user = await self.db["users"].find_one({"email": user_id})
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-        
-        user_id = user["_id"]  # 실제 ObjectId 가져오기
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
         storage = await self.storage_collection.find_one({
-            "user_id": user_id,  # 이미 ObjectId 타입
+            "user_id": ObjectId(user_id),
             "name": title
         })
 
@@ -93,7 +84,7 @@ class ImageService:
             return str(storage["_id"])
         else:
             result = await self.storage_collection.insert_one({
-                "user_id": user_id,  # 이미 ObjectId 타입
+                "user_id": ObjectId(user_id),
                 "name": title,
                 "file_count": file_count,
                 "created_at": now,
@@ -103,19 +94,11 @@ class ImageService:
 
     async def save_file_metadata(self, storage_id: str, user_id: str, file_info: dict) -> str:
         """파일 메타데이터를 MongoDB에 저장"""
-        # 먼저 이메일로 사용자 조회
-        user = await self.db["users"].find_one({"email": user_id})
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-        
         now = datetime.datetime.now(datetime.UTC)
 
         file_doc = {
             "storage_id": ObjectId(storage_id),
-            "user_id": user["_id"],  # ObjectId 변환 대신 user._id 사용
+            "user_id": ObjectId(user_id),
             "filename": file_info["filename"],
             "s3_key": file_info["s3_key"],
             "contents": file_info["contents"],
@@ -129,15 +112,6 @@ class ImageService:
         return str(result.inserted_id)
 
     async def process_images(self, title: str, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
-        # user_id는 이메일 형태로 전달됨
-        # 사용자 정보 조회
-        user = await self.db["users"].find_one({"email": user_id})
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-        
         file_id = str(uuid.uuid4())
         upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
@@ -146,9 +120,9 @@ class ImageService:
         storage_id = None
 
         try:
-            # Storage 생성 시 실제 user_id(ObjectId) 전달
+            # 먼저 Storage 생성
             storage_id = await self.create_or_update_storage(
-                user_id=user_id,  # 이메일 전달
+                user_id=user_id,
                 title=title,
                 file_count=len(files)
             )
