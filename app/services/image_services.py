@@ -4,13 +4,20 @@ import uuid
 from typing import List
 from fastapi import UploadFile, HTTPException, status, Depends, Header
 from app.models.image import ImageMetadata, ImageDocument
-from app.core.config import NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME, SECRET_KEY, ALGORITHM, NCP_TTS_API_URL, NCP_CLIENT_ID, NCP_CLIENT_SECRET, S3_REGION_NAME
+from app.core.config import (
+    NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET,
+    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME,
+    SECRET_KEY, ALGORITHM, NCP_TTS_API_URL, NCP_CLIENT_ID,
+    NCP_CLIENT_SECRET, S3_REGION_NAME
+)
 import boto3
 import botocore
 import requests
 from datetime import datetime
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
 import shutil
-from jose import jwt  # JWT 처리 라이브러리
+from jose import jwt
 from jose.exceptions import JWTError
 from fastapi.security import OAuth2PasswordBearer
 import time
@@ -26,12 +33,12 @@ import asyncio
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 최대 허용 파일 크기: 5MB
+MAX_FILE_SIZE = 10 * 1024 * 1024
 MIN_FILE_SIZE = 1
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# JWT 인증 검증 함수
+
 async def verify_jwt(token: str = Header(...)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -40,50 +47,69 @@ async def verify_jwt(token: str = Header(...)):
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=ALGORITHM)
-        user_id: str = payload.get("sub")  # 사용자 ID 추출
+        user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-        # 여기에서 사용자 정보를 가져오는 로직을 추가할 수 있습니다.
-        # 예: user = await get_user_by_id(user_id)
-    except JWTError:  # JWT 검증 실패 시 예외 처리
+    except JWTError:
         raise credentials_exception
-    return user_id  # 사용자 ID 반환
+    return user_id
 
 
 class ImageService:
-    def __init__(self):
-        # S3 클라이언트 초기화
+    def __init__(self, mongodb_client: AsyncIOMotorClient):
         self.s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY_ID,
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
             region_name=S3_REGION_NAME
         )
+        self.db = mongodb_client
+        self.storage_collection = self.db.storages
+
+    async def create_or_update_storage(self, user_id: str, title: str, file_count: int) -> str:
+        """보관함 생성 또는 업데이트"""
+        now = datetime.utcnow()
+
+        # 사용자의 해당 이름의 보관함이 있는지 확인
+        storage = await self.storage_collection.find_one({
+            "user_id": ObjectId(user_id),
+            "name": title
+        })
+
+        if storage:
+            # 기존 보관함 업데이트
+            await self.storage_collection.update_one(
+                {"_id": storage["_id"]},
+                {
+                    "$inc": {"file_count": file_count},
+                    "$set": {"updated_at": now}
+                }
+            )
+            return str(storage["_id"])
+        else:
+            # 새 보관함 생성
+            result = await self.storage_collection.insert_one({
+                "user_id": ObjectId(user_id),
+                "name": title,
+                "file_count": file_count,
+                "created_at": now,
+                "updated_at": now
+            })
+            return str(result.inserted_id)
 
     async def process_images(self, title: str, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
         file_id = str(uuid.uuid4())
-        # 사용자 ID를 포함한 업로드 경로 생성
         upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
 
         processed_files = []
-        '''
-        네이버 CLOVA OCR로 텍스트를 추출한 뒤 TTS로 mp3를 생성합니다.
-        Args:
-            files (list[UploadFile]): 업로드된 파일 목록
-        '''
         try:
             for file in files:
                 file_path = os.path.join(upload_dir, file.filename)
                 try:
-                    # 파일 내용을 읽어 변수에 저장
                     content = await file.read()
-                    if not content:  # 파일 크기가 0인 경우
-                        print(f"[Error] Empty file detected: {file.filename} (Size: 0 bytes)")
+                    if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
-
-                    # 파일 크기와 콘텐츠 유형 로깅
-                    #print(f"Processing file: {file.filename} (Size: {len(content)} bytes)")
 
                     with open(file_path, "wb") as f:
                         f.write(content)
@@ -91,9 +117,7 @@ class ImageService:
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
 
-                    # 네이버 CLOVA OCR 호출 및 결과 처리 (텍스트만 추출)
                 try:
-                    #print('file', file)
                     text = await self._call_clova_ocr(file)
                 except aiohttp.ClientError as e:
                     raise HTTPException(status_code=500, detail=f"CLOVA OCR API 호출 실패: {e}")
@@ -101,18 +125,23 @@ class ImageService:
                 combined_text = " ".join(text)
 
                 try:
-                    await self._call_naver_tts(combined_text, file.filename, title)
+                    s3_url = await self._call_naver_tts(combined_text, file.filename, title)
                 except aiohttp.ClientError as e:
                     raise HTTPException(status_code=500, detail=f"TTS API 호출 실패: {e}")
 
-                # 이미지 파일 메타데이터 저장
                 processed_files.append(ImageMetadata(
                     filename=file.filename,
                     content_type=file.content_type,
                     size=len(content)
                 ))
 
-            # 이미지 문서 반환
+            # MongoDB에 보관함 메타데이터 저장
+            storage_id = await self.create_or_update_storage(
+                user_id=user_id,
+                title=title,
+                file_count=len(files)
+            )
+
             image_doc = ImageDocument(
                 title=title,
                 file_id=file_id,
@@ -127,6 +156,8 @@ class ImageService:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
+
+    # _call_clova_ocr 및 _call_naver_tts 메서드는 기존과 동일하게 유지
 
     async def _call_clova_ocr(self, file: UploadFile):
         """
