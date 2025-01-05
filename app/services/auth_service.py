@@ -109,7 +109,17 @@ class AuthService:
         }
 
         try:
-            await self.users_collection.insert_one(new_user)
+            result = await self.db["users"].insert_one(new_user)
+
+            created_user = await self.db["users"].find_one({"_id": result.inserted_id})
+            if not created_user:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="사용자 생성 후 조회 실패"
+                )
+            
+            return created_user
+            
         except Exception as e:
             raise HTTPException(status_code=409, detail="Email already registered")
 
