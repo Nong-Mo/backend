@@ -11,9 +11,8 @@ from app.core.config import (
     NCP_CLIENT_SECRET, S3_REGION_NAME
 )
 import boto3
-import botocore
 import requests
-from datetime import datetime
+import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 import shutil
@@ -22,14 +21,12 @@ from jose.exceptions import JWTError
 from fastapi.security import OAuth2PasswordBearer
 import time
 import json
-import aiohttp
 import urllib.parse
 import urllib.request
 import ssl
 import logging
 import asyncio
 
-# 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -65,19 +62,18 @@ class ImageService:
         )
         self.db = mongodb_client
         self.storage_collection = self.db.storages
+        self.files_collection = self.db.files
 
     async def create_or_update_storage(self, user_id: str, title: str, file_count: int) -> str:
         """보관함 생성 또는 업데이트"""
-        now = datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
-        # 사용자의 해당 이름의 보관함이 있는지 확인
         storage = await self.storage_collection.find_one({
             "user_id": ObjectId(user_id),
             "name": title
         })
 
         if storage:
-            # 기존 보관함 업데이트
             await self.storage_collection.update_one(
                 {"_id": storage["_id"]},
                 {
@@ -87,7 +83,6 @@ class ImageService:
             )
             return str(storage["_id"])
         else:
-            # 새 보관함 생성
             result = await self.storage_collection.insert_one({
                 "user_id": ObjectId(user_id),
                 "name": title,
@@ -97,13 +92,41 @@ class ImageService:
             })
             return str(result.inserted_id)
 
+    async def save_file_metadata(self, storage_id: str, user_id: str, file_info: dict) -> str:
+        """파일 메타데이터를 MongoDB에 저장"""
+        now = datetime.datetime.now(datetime.UTC)
+
+        file_doc = {
+            "storage_id": ObjectId(storage_id),
+            "user_id": ObjectId(user_id),
+            "filename": file_info["filename"],
+            "s3_key": file_info["s3_key"],
+            "contents": file_info["contents"],
+            "file_size": file_info["file_size"],
+            "mime_type": file_info["mime_type"],
+            "created_at": now,
+            "updated_at": now
+        }
+
+        result = await self.files_collection.insert_one(file_doc)
+        return str(result.inserted_id)
+
     async def process_images(self, title: str, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
         file_id = str(uuid.uuid4())
         upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
 
         processed_files = []
+        storage_id = None
+
         try:
+            # 먼저 Storage 생성
+            storage_id = await self.create_or_update_storage(
+                user_id=user_id,
+                title=title,
+                file_count=len(files)
+            )
+
             for file in files:
                 file_path = os.path.join(upload_dir, file.filename)
                 try:
@@ -114,50 +137,53 @@ class ImageService:
                     with open(file_path, "wb") as f:
                         f.write(content)
 
-                except (IOError, ValueError) as e:
-                    raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
-
-                try:
+                    # OCR 텍스트 추출
                     text = await self._call_clova_ocr(file)
-                except aiohttp.ClientError as e:
-                    raise HTTPException(status_code=500, detail=f"CLOVA OCR API 호출 실패: {e}")
+                    combined_text = " ".join(text)
 
-                combined_text = " ".join(text)
+                    # TTS 변환 및 S3 업로드
+                    s3_key = await self._call_naver_tts(combined_text, file.filename, title)
 
-                try:
-                    s3_url = await self._call_naver_tts(combined_text, file.filename, title)
-                except aiohttp.ClientError as e:
-                    raise HTTPException(status_code=500, detail=f"TTS API 호출 실패: {e}")
+                    # Files 컬렉션에 저장할 메타데이터 준비
+                    file_info = {
+                        "filename": file.filename,
+                        "s3_key": s3_key,
+                        "contents": combined_text,  # OCR로 추출한 텍스트
+                        "file_size": len(content),
+                        "mime_type": file.content_type
+                    }
 
-                processed_files.append(ImageMetadata(
-                    filename=file.filename,
-                    content_type=file.content_type,
-                    size=len(content)
-                ))
+                    # Files 컬렉션에 메타데이터 저장
+                    file_id = await self.save_file_metadata(
+                        storage_id=storage_id,
+                        user_id=user_id,
+                        file_info=file_info
+                    )
 
-            # MongoDB에 보관함 메타데이터 저장
-            storage_id = await self.create_or_update_storage(
-                user_id=user_id,
-                title=title,
-                file_count=len(files)
-            )
+                    processed_files.append(ImageMetadata(
+                        filename=file.filename,
+                        content_type=file.content_type,
+                        size=len(content)
+                    ))
+
+                except (IOError, ValueError) as e:
+                    raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
 
             image_doc = ImageDocument(
                 title=title,
                 file_id=file_id,
                 processed_files=processed_files,
-                created_at=datetime.utcnow().isoformat()
+                created_at=datetime.datetime.now(datetime.UTC).isoformat()
             )
             return image_doc
 
-        except HTTPException as e:
-            raise e
         except Exception as e:
+            # 에러 발생 시 storage_id가 있다면 해당 storage 삭제
+            if storage_id:
+                await self.storage_collection.delete_one({"_id": ObjectId(storage_id)})
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
-
-    # _call_clova_ocr 및 _call_naver_tts 메서드는 기존과 동일하게 유지
 
     async def _call_clova_ocr(self, file: UploadFile):
         """
@@ -246,10 +272,9 @@ class ImageService:
             }
 
             request = urllib.request.Request(NCP_TTS_API_URL, data, headers)
-
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: urllib.request.urlopen(request, context=ssl_context).read()
+                lambda: urllib.request.urlopen(request, context=ssl_context).read(), *()
             )
 
             file_id = str(uuid.uuid4())
@@ -262,10 +287,11 @@ class ImageService:
                     Key=s3_key,
                     Body=response,
                     ContentType='audio/mp3'
-                )
+                ),
+                *()
             )
 
-            return f"s3://{S3_BUCKET_NAME}/{s3_key}"
+            return s3_key  # s3_key만 반환하도록 수정
 
         except Exception as e:
             logger.error(f"TTS Error: {str(e)}")
