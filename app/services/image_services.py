@@ -53,6 +53,9 @@ async def verify_jwt(token: str = Header(...)):
 
 
 class ImageService:
+    # 허용된 보관함 이름 목록
+    ALLOWED_STORAGE_NAMES = ["책", "영수증", "굿즈", "필름 사진", "서류", "티켓"]
+
     def __init__(self, mongodb_client: AsyncIOMotorClient):
         self.s3_client = boto3.client(
             's3',
@@ -64,58 +67,37 @@ class ImageService:
         self.storage_collection = self.db.storages
         self.files_collection = self.db.files
 
-    async def create_or_update_storage(self, user_id: str, title: str, file_count: int) -> str:
-        """보관함 생성 또는 업데이트"""
-        # 먼저 이메일로 사용자 조회
-        user = await self.db["users"].find_one({"email": user_id})
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-        
-        user_id = user["_id"]  # 실제 ObjectId 가져오기
-        now = datetime.datetime.utcnow()
-
+    async def update_storage_count(self, user_id: ObjectId, storage_name: str, file_count: int) -> str:
+        """보관함 파일 수 업데이트"""
         storage = await self.storage_collection.find_one({
-            "user_id": user_id,  # 이미 ObjectId 타입
-            "name": title
+            "user_id": user_id,
+            "name": storage_name
         })
 
-        if storage:
-            await self.storage_collection.update_one(
-                {"_id": storage["_id"]},
-                {
-                    "$inc": {"file_count": file_count},
-                    "$set": {"updated_at": now}
-                }
-            )
-            return str(storage["_id"])
-        else:
-            result = await self.storage_collection.insert_one({
-                "user_id": user_id,  # 이미 ObjectId 타입
-                "name": title,
-                "file_count": file_count,
-                "created_at": now,
-                "updated_at": now
-            })
-            return str(result.inserted_id)
-
-    async def save_file_metadata(self, storage_id: str, user_id: str, file_info: dict) -> str:
-        """파일 메타데이터를 MongoDB에 저장"""
-        # 먼저 이메일로 사용자 조회
-        user = await self.db["users"].find_one({"email": user_id})
-        if not user:
+        if not storage:
             raise HTTPException(
                 status_code=404,
-                detail="User not found"
+                detail=f"Storage '{storage_name}' not found for this user"
             )
-        
+
+        now = datetime.datetime.utcnow()
+        await self.storage_collection.update_one(
+            {"_id": storage["_id"]},
+            {
+                "$inc": {"file_count": file_count},
+                "$set": {"updated_at": now}
+            }
+        )
+        return str(storage["_id"])
+
+    async def save_file_metadata(self, storage_id: str, user_id: ObjectId, file_info: dict) -> str:
+        """파일 메타데이터를 MongoDB에 저장"""
         now = datetime.datetime.now(datetime.UTC)
 
         file_doc = {
             "storage_id": ObjectId(storage_id),
-            "user_id": user["_id"],  # ObjectId 변환 대신 user._id 사용
+            "user_id": user_id,
+            "title": file_info["title"],  # 사용자가 지정한 제목 추가
             "filename": file_info["filename"],
             "s3_key": file_info["s3_key"],
             "contents": file_info["contents"],
@@ -128,8 +110,24 @@ class ImageService:
         result = await self.files_collection.insert_one(file_doc)
         return str(result.inserted_id)
 
-    async def process_images(self, title: str, files: List[UploadFile], user_id: str = Depends(verify_jwt)):
-        # user_id는 이메일 형태로 전달됨
+    async def process_images(self, storage_name: str, title: str, files: List[UploadFile],
+                             user_id: str = Depends(verify_jwt)):
+        """
+        이미지 처리를 수행하는 메서드
+
+        Args:
+            storage_name (str): 보관함 이름 ("책", "영수증" 등)
+            title (str): 사용자가 지정한 파일 제목
+            files (List[UploadFile]): 처리할 파일 목록
+            user_id (str): 사용자 이메일 (JWT에서 추출)
+        """
+        # 보관함 이름 검증
+        if storage_name not in self.ALLOWED_STORAGE_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid storage name. Allowed names are: {', '.join(self.ALLOWED_STORAGE_NAMES)}"
+            )
+
         # 사용자 정보 조회
         user = await self.db["users"].find_one({"email": user_id})
         if not user:
@@ -137,7 +135,7 @@ class ImageService:
                 status_code=404,
                 detail="User not found"
             )
-        
+
         file_id = str(uuid.uuid4())
         upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
@@ -146,10 +144,10 @@ class ImageService:
         storage_id = None
 
         try:
-            # Storage 생성 시 실제 user_id(ObjectId) 전달
-            storage_id = await self.create_or_update_storage(
-                user_id=user_id,  # 이메일 전달
-                title=title,
+            # Storage 업데이트
+            storage_id = await self.update_storage_count(
+                user_id=user["_id"],
+                storage_name=storage_name,
                 file_count=len(files)
             )
 
@@ -168,13 +166,14 @@ class ImageService:
                     combined_text = " ".join(text)
 
                     # TTS 변환 및 S3 업로드
-                    s3_key = await self._call_naver_tts(combined_text, file.filename, title)
+                    s3_key = await self._call_naver_tts(combined_text, file.filename, storage_name)
 
                     # Files 컬렉션에 저장할 메타데이터 준비
                     file_info = {
+                        "title": title,  # 사용자가 지정한 제목
                         "filename": file.filename,
                         "s3_key": s3_key,
-                        "contents": combined_text,  # OCR로 추출한 텍스트
+                        "contents": combined_text,
                         "file_size": len(content),
                         "mime_type": file.content_type
                     }
@@ -182,7 +181,7 @@ class ImageService:
                     # Files 컬렉션에 메타데이터 저장
                     file_id = await self.save_file_metadata(
                         storage_id=storage_id,
-                        user_id=user_id,
+                        user_id=user["_id"],
                         file_info=file_info
                     )
 
@@ -204,9 +203,12 @@ class ImageService:
             return image_doc
 
         except Exception as e:
-            # 에러 발생 시 storage_id가 있다면 해당 storage 삭제
+            # Storage 카운트 롤백
             if storage_id:
-                await self.storage_collection.delete_one({"_id": ObjectId(storage_id)})
+                await self.storage_collection.update_one(
+                    {"_id": ObjectId(storage_id)},
+                    {"$inc": {"file_count": -len(files)}}
+                )
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
