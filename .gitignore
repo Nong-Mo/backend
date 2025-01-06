@@ -48,3 +48,10 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+
+# Cursor Rules
+.cursorrules
+
+# Temporary code files
+temp_code.py
+    
