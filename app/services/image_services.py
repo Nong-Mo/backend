@@ -27,6 +27,7 @@ import urllib.request
 import ssl
 import logging
 import asyncio
+from app.services.storage_service import StorageService
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class ImageService:
 
         processed_files = []
         storage_id = None
+        image_paths = []  # PDF 변환을 위한 이미지 경로 저장
 
         try:
             # Storage 업데이트
@@ -161,6 +163,8 @@ class ImageService:
 
                     with open(file_path, "wb") as f:
                         f.write(content)
+                    
+                    image_paths.append(file_path)  # PDF 변환을 위해 경로 저장
 
                     # OCR 텍스트 추출
                     text = await self._call_clova_ocr(file)
@@ -194,6 +198,16 @@ class ImageService:
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
+
+            # 모든 이미지 처리가 완료된 후 PDF 생성
+            if len(image_paths) > 0:
+                storage_service = StorageService(self.db)
+                await storage_service.create_pdf_from_images(
+                    user_id=user["_id"],
+                    storage_id=storage_id,
+                    image_paths=image_paths,
+                    pdf_title=title
+                )
 
             image_doc = ImageDocument(
                 title=title,

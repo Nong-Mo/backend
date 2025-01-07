@@ -25,3 +25,20 @@ class AudioFileDetail(BaseModel):
     uploadDate: datetime
     audioUrl: str  # S3에서 가져온 오디오 파일 URL
     contents: str  # 파일의 텍스트 내용
+
+class PDFConversionResponse(BaseModel):
+    fileID: str
+    pdfUrl: str
+    message: str = "Images successfully converted to PDF"
+
+class PDFConversionRequest(BaseModel):
+    file_ids: List[str]
+    pdf_title: str  # 사용자가 지정한 PDF 파일 이름
+
+class FileDetailResponse(BaseModel):
+    fileID: str
+    fileName: str
+    uploadDate: datetime
+    fileUrl: str  # S3에서 가져온 파일 URL
+    contents: str | None = None  # 텍스트 내용 (OCR 결과가 있는 경우)
+    fileType: str  # "audio", "pdf", "image" 등
