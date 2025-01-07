@@ -75,7 +75,7 @@ class ImageService:
             )
         
         user_id = user["_id"]  # 실제 ObjectId 가져오기
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
         storage = await self.storage_collection.find_one({
             "user_id": user_id,  # 이미 ObjectId 타입
