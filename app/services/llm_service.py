@@ -1,3 +1,4 @@
+import datetime
 import google.generativeai as genai
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -44,13 +45,17 @@ class LLMService:
             context = []
             for file in files:
                 try:
+                    # 필수 필드가 없는 경우 대체값 사용
                     file_info = {
-                        "title": file["title"],
-                        "created_at": file["created_at"].isoformat(),
+                        "title": file.get("title", "제목 없음"),
+                        "created_at": file.get("created_at", datetime.datetime.now()),
                         "type": file.get("mime_type", "unknown"),
                         "content": file["contents"]
                     }
-                    context.append(file_info)
+                    if file_info["content"]:
+                        context.append(file_info)
+                    else:
+                        logger.warning(f"Skipping file with empty content: {file_info['title']}")
                 except KeyError as e:
                     logger.error(f"Missing required field in file {file.get('title', 'unknown')}: {e}")
                     continue
