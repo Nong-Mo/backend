@@ -359,3 +359,71 @@ class ImageService:
             raise HTTPException(status_code=500, detail=f"요청 오류: {e}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"서버 오류: {e}")
+
+    async def process_receipt_ocr(
+            self,
+            storage_name: str,
+            title: str,
+            file: UploadFile,
+            user_id: str
+    ):
+        storage_id = None  # 변수 초기화
+
+        try:
+            # 사용자 정보 조회
+            user = await self.db["users"].find_one({"email": user_id})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # OCR 실행
+            ocr_result = await self.call_clova_receipt_ocr(file)
+
+            # S3에 원본 이미지 저장
+            file.file.seek(0)
+            contents = await file.read()
+            file_id = str(uuid.uuid4())
+            s3_key = f"receipts/{user_id}/{file_id}/{file.filename}"
+
+            self.s3_client.put_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=s3_key,
+                Body=contents,
+                ContentType=file.content_type
+            )
+
+            # Storage 업데이트
+            storage_id = await self.update_storage_count(
+                user_id=user["_id"],
+                storage_name=storage_name,
+                file_count=1
+            )
+
+            # Files 컬렉션에 메타데이터 저장
+            file_info = {
+                "title": title,
+                "filename": file.filename,
+                "s3_key": s3_key,
+                "contents": ocr_result,  # OCR 결과 저장
+                "file_size": len(contents),
+                "mime_type": file.content_type
+            }
+
+            file_id = await self.save_file_metadata(
+                storage_id=storage_id,
+                user_id=user["_id"],
+                file_info=file_info
+            )
+
+            return {
+                "file_id": file_id,
+                "ocr_result": ocr_result
+            }
+
+        except Exception as e:
+            # 실패 시 Storage 카운트 롤백
+            if storage_id:
+                await self.storage_collection.update_one(
+                    {"_id": ObjectId(storage_id)},
+                    {"$inc": {"file_count": -1}}
+                )
+            raise e
