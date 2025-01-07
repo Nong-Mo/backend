@@ -36,8 +36,20 @@ async def get_storage_detail(
     특정 보관함의 상세 정보를 조회합니다.
     """
     try:
+        # 영어로 된 보관함 이름을 한글로 변환
+        storage_name_mapping = {
+            "book": "책",
+            "receipt": "영수증", 
+            "goods": "굿즈",
+            "film": "필름 사진",
+            "document": "서류",
+            "ticket": "티켓"
+        }
+        
+        korean_storage_name = storage_name_mapping.get(storage_name, storage_name)
+        
         storage_service = await StorageService.create(db)
-        return await storage_service.get_storage_detail(user_email, storage_name)
+        return await storage_service.get_storage_detail(user_email, korean_storage_name)
     except HTTPException as e:
         raise e
     except Exception as e:
