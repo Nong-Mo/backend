@@ -35,3 +35,6 @@ NCP_CLIENT_SECRET = os.getenv("NCP_CLIENT_SECRET")
 
 # TTS API URL
 NCP_TTS_API_URL = "https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts"
+
+# GOOGLE API KEY
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
