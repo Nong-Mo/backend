@@ -1,7 +1,16 @@
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail
+from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail, AudioFileDetail
 from typing import List
+from bson import ObjectId
+from botocore.config import Config
+from app.core.config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    S3_REGION_NAME,
+    S3_BUCKET_NAME
+)
+import boto3
 
 
 class StorageService:
@@ -20,6 +29,13 @@ class StorageService:
         self.db = db
         self.users_collection = db["users"]
         self.images_collection = db["images"]
+        self.s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=S3_REGION_NAME,
+            config=Config(signature_version='s3v4')
+        )
 
     @classmethod
     async def create(cls, db: AsyncIOMotorDatabase):
@@ -115,4 +131,55 @@ class StorageService:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch storage detail: {str(e)}"
+            )
+
+    async def get_file_detail(self, user_email: str, file_id: str) -> AudioFileDetail:
+        """
+        특정 파일의 상세 정보와 오디오 URL을 조회합니다.
+
+        Args:
+            user_email (str): 사용자 이메일
+            file_id (str): 파일 ID
+
+        Returns:
+            AudioFileDetail: 파일 상세 정보와 오디오 URL
+        """
+        try:
+            # 1. 사용자 정보 조회
+            user = await self.users_collection.find_one({"email": user_email})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # 2. 파일 정보 조회
+            file = await self.db.files.find_one({
+                "_id": ObjectId(file_id),
+                "user_id": user["_id"]
+            })
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # 3. S3 미리 서명된 URL 생성 (1시간 유효)
+            audio_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': S3_BUCKET_NAME,
+                    'Key': file['s3_key']
+                },
+                ExpiresIn=3600  # 1시간
+            )
+
+            return AudioFileDetail(
+                fileID=str(file["_id"]),
+                fileName=file["title"],
+                uploadDate=file["created_at"],
+                audioUrl=audio_url,
+                contents=file["contents"]
+            )
+
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch file detail: {str(e)}"
             )

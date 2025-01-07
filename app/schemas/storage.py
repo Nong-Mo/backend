@@ -18,3 +18,10 @@ class FileDetail(BaseModel):
 class StorageDetailResponse(BaseModel):
     storageName: str # 보관함 이름
     fileList: List[FileDetail] # FileDetail 객체들의 리스트
+
+class AudioFileDetail(BaseModel):
+    fileID: str
+    fileName: str
+    uploadDate: datetime
+    audioUrl: str  # S3에서 가져온 오디오 파일 URL
+    contents: str  # 파일의 텍스트 내용
