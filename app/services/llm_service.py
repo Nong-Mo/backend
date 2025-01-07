@@ -1,4 +1,3 @@
-import datetime
 import google.generativeai as genai
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -45,17 +44,13 @@ class LLMService:
             context = []
             for file in files:
                 try:
-                    # 필수 필드가 없는 경우 대체값 사용
                     file_info = {
                         "title": file.get("title", "제목 없음"),
-                        "created_at": file.get("created_at", datetime.datetime.now()),
+                        "created_at": file["created_at"].isoformat(),
                         "type": file.get("mime_type", "unknown"),
                         "content": file["contents"]
                     }
-                    if file_info["content"]:
-                        context.append(file_info)
-                    else:
-                        logger.warning(f"Skipping file with empty content: {file_info['title']}")
+                    context.append(file_info)
                 except KeyError as e:
                     logger.error(f"Missing required field in file {file.get('title', 'unknown')}: {e}")
                     continue
@@ -72,12 +67,9 @@ class LLMService:
 
            사용자 질문: {query}
 
-           위 정보를 바탕으로:
-           1. 질문에 정확하게 답변해주세요.
-           2. 관련 파일의 제목과 날짜를 포함해주세요.
-           3. 영수증 정보의 경우 가게명, 금액, 결제 수단 등 주요 정보를 포함해주세요.
-           4. 개인정보는 마스킹 처리해주세요.
-           5. 답변을 찾을 수 없는 경우, 그 사실을 명시해주세요.
+           파일 내용을 바탕으로 자연스러운 문장으로 답변해주세요.
+           영수증의 경우 관련된 가게명, 날짜, 결제 정보를 포함해서 답변해주세요.
+           개인정보는 마스킹 처리해주세요.
            """
 
             logger.debug("Sending prompt to Gemini API")
