@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.database import get_database
 from app.services.storage_service import StorageService
-from app.schemas.storage import StorageListResponse, StorageDetailResponse
+from app.schemas.storage import StorageListResponse, StorageDetailResponse, AudioFileDetail
 from app.services.image_services import verify_jwt
 
 router = APIRouter()
@@ -44,4 +44,24 @@ async def get_storage_detail(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch storage detail: {str(e)}"
+        )
+
+@router.get("/file/{file_id}", response_model=AudioFileDetail)
+async def get_file_detail(
+    file_id: str,
+    user_email: str = Depends(verify_jwt),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    특정 파일의 상세 정보와 오디오 URL을 조회합니다.
+    """
+    try:
+        storage_service = await StorageService.create(db)
+        return await storage_service.get_file_detail(user_email, file_id)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch file detail: {str(e)}"
         )
