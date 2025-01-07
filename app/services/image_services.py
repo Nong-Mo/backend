@@ -8,7 +8,8 @@ from app.core.config import (
     NAVER_CLOVA_OCR_API_URL, NAVER_CLOVA_OCR_SECRET,
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME,
     SECRET_KEY, ALGORITHM, NCP_TTS_API_URL, NCP_CLIENT_ID,
-    NCP_CLIENT_SECRET, S3_REGION_NAME
+    NCP_CLIENT_SECRET, S3_REGION_NAME,
+    NAVER_CLOVA_RECEIPT_OCR_SECRET, NAVER_CLOVA_RECEIPT_OCR_API_URL
 )
 import boto3
 import requests
@@ -324,3 +325,37 @@ class ImageService:
         except Exception as e:
             logger.error(f"TTS Error: {str(e)}")
             raise HTTPException(status_code=500, detail=f"TTS 생성 실패: {str(e)}")
+
+    async def call_clova_receipt_ocr(self, file: UploadFile):
+        try:
+            print(f"API URL: {NAVER_CLOVA_RECEIPT_OCR_API_URL}")
+            file.file.seek(0)
+            contents = await file.read()
+            encoded_message = json.dumps({
+                'version': 'V2',
+                'requestId': str(uuid.uuid4()),
+                'timestamp': int(round(time.time() * 1000)),
+                'images': [{
+                    'format': file.content_type.split('/')[1],
+                    'name': file.filename
+                }]
+            })
+
+            response = requests.post(
+                f"{NAVER_CLOVA_RECEIPT_OCR_API_URL}",
+                headers={'X-OCR-SECRET': NAVER_CLOVA_RECEIPT_OCR_SECRET},
+                data={'message': encoded_message},
+                files={'file': (file.filename, contents, file.content_type)}
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except requests.exceptions.HTTPError as e:
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f"HTTP 오류: {e.response.status_code} - {e.response.text}"
+            )
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"요청 오류: {e}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"서버 오류: {e}")
