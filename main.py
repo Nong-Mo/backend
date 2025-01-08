@@ -10,7 +10,8 @@ app.add_middleware(
         "http://localhost:3000",
         "https://6c68-118-34-210-44.ngrok-free.app",
         "http://ec2-54-180-149-98.ap-northeast-2.compute.amazonaws.com",
-        "https://nongmo-a2d.com"
+        "https://nongmo-a2d.com",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],  # 모든 HTTP 메서드 허용 (POST, GET, OPTIONS 등)
