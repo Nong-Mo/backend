@@ -116,7 +116,10 @@ class StorageService:
 
             # 3. 보관함의 파일 목록 조회
             file_list = []
-            cursor = self.db.files.find({"storage_id": storage["_id"]})
+            cursor = self.db.files.find({
+                "storage_id": storage["_id"],
+                "is_primary": True # primary 파일만 조회
+            })
 
             async for file in cursor:
                 file_list.append(FileDetail(
@@ -141,13 +144,14 @@ class StorageService:
     async def get_file_detail(self, user_email: str, file_id: str) -> FileDetailResponse:
         """
         특정 파일의 상세 정보와 URL을 조회합니다.
+        primary 파일의 경우 연관된 파일(PDF)도 함께 조회합니다.
 
         Args:
             user_email (str): 사용자 이메일
             file_id (str): 파일 ID
 
         Returns:
-            FileDetailResponse: 파일 상세 정보와 URL
+            FileDetailResponse: 파일 상세 정보, URL 및 연관 파일 정보
         """
         try:
             # 1. 사용자 정보 조회
@@ -163,22 +167,45 @@ class StorageService:
             if not file:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            # 3. S3 미리 서명된 URL 생성 (1시간 유효)
+            # 3. S3 미리 서명된 URL 생성
             file_url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': S3_BUCKET_NAME,
                     'Key': file['s3_key']
                 },
-                ExpiresIn=3600  # 1시간
+                ExpiresIn=3600
             )
 
-            # 4. 파일 타입 결정 (mime_type 기반)
+            # 4. 파일 타입 결정
             file_type = "audio"  # 기본값
             if file.get("mime_type") == "application/pdf":
                 file_type = "pdf"
             elif file.get("mime_type", "").startswith("image/"):
                 file_type = "image"
+
+            # 5. 연관된 파일 조회
+            related_file = None
+            if file.get("is_primary"):
+                related_file = await self.db.files.find_one({
+                    "primary_file_id": file["_id"]
+                })
+            elif file.get("primary_file_id"):
+                related_file = await self.db.files.find_one({
+                    "_id": file["primary_file_id"]
+                })
+
+            # 6. 연관 파일 URL 생성
+            related_file_url = None
+            if related_file:
+                related_file_url = self.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={
+                        'Bucket': S3_BUCKET_NAME,
+                        'Key': related_file['s3_key']
+                    },
+                    ExpiresIn=3600
+                )
 
             return FileDetailResponse(
                 fileID=str(file["_id"]),
@@ -186,7 +213,11 @@ class StorageService:
                 uploadDate=file["created_at"],
                 fileUrl=file_url,
                 contents=file.get("contents"),
-                fileType=file_type
+                fileType=file_type,
+                relatedFile={
+                    "fileUrl": related_file_url,
+                    "fileType": "pdf" if file_type == "audio" else "audio"
+                } if related_file else None
             )
 
         except HTTPException as e:
@@ -293,7 +324,8 @@ class StorageService:
         user_id: ObjectId, 
         storage_id: str,
         image_paths: List[str], 
-        pdf_title: str
+        pdf_title: str,
+        primary_file_id: str  # 추가된 파라미터
     ) -> dict:
         """
         이미지들을 PDF로 변환하고 저장합니다.
@@ -303,7 +335,7 @@ class StorageService:
             storage_id (str): 보관함 ID
             image_paths (List[str]): 변환할 이미지 파일 경로 목록
             pdf_title (str): PDF 파일 제목
-
+            primary_file_id (str): 대표 파일(MP3)의 ID
         Returns:
             dict: PDF 파일 메타데이터
         """
@@ -331,12 +363,14 @@ class StorageService:
                 pdf_doc = {
                     "storage_id": ObjectId(storage_id),
                     "user_id": user_id,
-                    "title": f"{pdf_title} (PDF)",
+                    "title": pdf_title,  # "(PDF)" 제거
                     "s3_key": s3_key,
                     "created_at": now,
                     "updated_at": now,
                     "mime_type": "application/pdf",
-                    "file_size": os.path.getsize(pdf_path)
+                    "file_size": os.path.getsize(pdf_path),
+                    "primary_file_id": ObjectId(primary_file_id),  # MP3 파일과 연결
+                    "is_primary": False  # 연관 파일 표시
                 }
                 
                 result = await self.db.files.insert_one(pdf_doc)

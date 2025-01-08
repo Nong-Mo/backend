@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 class StorageInfo(BaseModel):
     storageName: str # 보관함 이름 (예: "책 보관함", "편지 보관함" 등)
@@ -35,6 +35,10 @@ class PDFConversionRequest(BaseModel):
     file_ids: List[str]
     pdf_title: str  # 사용자가 지정한 PDF 파일 이름
 
+class RelatedFileInfo(BaseModel):
+    fileUrl: str
+    fileType: str
+
 class FileDetailResponse(BaseModel):
     fileID: str
     fileName: str
@@ -42,3 +46,4 @@ class FileDetailResponse(BaseModel):
     fileUrl: str  # S3에서 가져온 파일 URL
     contents: str | None = None  # 텍스트 내용 (OCR 결과가 있는 경우)
     fileType: str  # "audio", "pdf", "image" 등
+    relatedFile: Optional[RelatedFileInfo]

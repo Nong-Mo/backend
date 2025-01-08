@@ -82,7 +82,7 @@ class ImageService:
                 detail=f"Storage '{storage_name}' not found for this user"
             )
 
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
         await self.storage_collection.update_one(
             {"_id": storage["_id"]},
             {
@@ -106,7 +106,8 @@ class ImageService:
             "file_size": file_info["file_size"],
             "mime_type": file_info["mime_type"],
             "created_at": now,
-            "updated_at": now
+            "updated_at": now,
+            "is_primary": file_info.get("is_primary", False)  # is_primary 필드 추가
         }
 
         result = await self.files_collection.insert_one(file_doc)
@@ -170,40 +171,44 @@ class ImageService:
             # 하나의 TTS 파일 생성 및 S3 업로드
             s3_key = await self._call_naver_tts(final_text, f"combined_{file_id}", storage_name)
 
-            # Files 컬렉션에 단일 메타데이터 저장
+            # Files 컬렉션에 메타데이터 저장 부분 수정
             file_info = {
                 "title": title,
                 "filename": f"combined_{file_id}",
                 "s3_key": s3_key,
                 "contents": final_text,
                 "file_size": total_size,
-                "mime_type": "multipart/mixed",  # 여러 이미지가 포함된 복합 파일임을 표시
-                "original_files": [f.filename for f in files]  # 원본 파일명들 저장
+                "mime_type": "audio/mp3",  # MP3를 primary로
+                "original_files": [f.filename for f in files],
+                "is_primary": True  # 대표 파일 표시
             }
 
-            file_id = await self.save_file_metadata(
+            # MP3 파일 저장
+            mp3_file_id = await self.save_file_metadata(
                 storage_id=storage_id,
                 user_id=user["_id"],
                 file_info=file_info
             )
 
-            # PDF 생성
+            # PDF 생성 및 저장
+            pdf_result = None
             if len(image_paths) > 0:
                 storage_service = StorageService(self.db)
                 pdf_result = await storage_service.create_pdf_from_images(
                     user_id=user["_id"],
                     storage_id=storage_id,
                     image_paths=image_paths,
-                    pdf_title=title
+                    pdf_title=title,
+                    primary_file_id=mp3_file_id  # MP3 파일과 연결
                 )
                 logger.info(f"PDF created successfully: {pdf_result}")
 
             return ImageDocument(
                 title=title,
-                file_id=file_id,
+                file_id=str(mp3_file_id), # 실제 MP3 파일의 ID 반환
                 processed_files=[ImageMetadata(
                     filename=f"combined_{file_id}",
-                    content_type="multipart/mixed",
+                    content_type="audio/mp3",
                     size=total_size
                 )],
                 created_at=datetime.datetime.now(datetime.UTC).isoformat()
