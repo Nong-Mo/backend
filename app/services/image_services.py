@@ -119,7 +119,7 @@ class ImageService:
         storage_name: str,
         title: str,
         files: List[UploadFile],
-        pages_data: List[dict],  # 각 페이지의 정점 정보 추가
+        pages_vertices_data: List[dict] = None,  # 선택적 파라미터로 변경
         user_id: str = Depends(verify_jwt)
     ):
         """
@@ -129,7 +129,7 @@ class ImageService:
             storage_name: 보관함 이름
             title: 파일 제목
             files: 업로드된 이미지 파일 목록
-            pages_data: 각 페이지의 정점 정보 목록
+            pages_vertices_data: 각 페이지의 모서리 좌표 정보 목록
             user_id: 사용자 이메일
         """
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
@@ -147,7 +147,7 @@ class ImageService:
         os.makedirs(upload_dir, exist_ok=True)
 
         storage_id = None
-        transformed_image_paths = []  # 변환된 이미지 경로 저장
+        processed_image_paths = []  # PDF 생성에 사용할 이미지 경로 저장
         combined_text = []
 
         try:
@@ -159,37 +159,41 @@ class ImageService:
             )
 
             total_size = 0
-            for idx, (file, page_data) in enumerate(zip(files, pages_data)):
+            for idx, file in enumerate(files):
                 try:
-                    # 1. 원본 이미지 저장
-                    original_path = os.path.join(upload_dir, f"original_{idx}.jpg")
                     content = await file.read()
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    with open(original_path, "wb") as f:
+                    # 이미지 처리 경로 설정
+                    image_path = os.path.join(upload_dir, f"image_{idx}.jpg")
+                    with open(image_path, "wb") as f:
                         f.write(content)
 
-                    # 2. 이미지 시점 변환
-                    transformed_path = os.path.join(upload_dir, f"transformed_{idx}.jpg")
-                    transformed_image = await self._transform_image(
-                        original_path,
-                        page_data['vertices']
-                    )
-                    cv2.imwrite(transformed_path, transformed_image)
-                    transformed_image_paths.append(transformed_path)
+                    # pages_vertices_data가 있는 경우 시점 변환 수행
+                    if pages_vertices_data:
+                        transformed_image = await self._transform_image(
+                            image_path,
+                            pages_vertices_data[idx]['vertices']
+                        )
+                        processed_path = os.path.join(upload_dir, f"transformed_{idx}.jpg")
+                        cv2.imwrite(processed_path, transformed_image)
+                    else:
+                        processed_path = image_path  # 원본 이미지 경로 사용
 
-                    # 3. 변환된 이미지로 OCR 수행
-                    with open(transformed_path, "rb") as f:
-                        transformed_file = UploadFile(
+                    # OCR 수행
+                    with open(processed_path, "rb") as f:
+                        file_for_ocr = UploadFile(
                             file=f,
-                            filename=f"transformed_{idx}.jpg",
+                            filename=f"image_{idx}.jpg",
                             content_type="image/jpeg"
                         )
-                        text = await self._call_clova_ocr(transformed_file)
+                        text = await self._call_clova_ocr(file_for_ocr)
                         combined_text.extend(text)
 
-                    total_size += os.path.getsize(transformed_path)
+                    # PDF 생성을 위해 처리된 이미지 경로 저장
+                    processed_image_paths.append(processed_path)
+                    total_size += os.path.getsize(processed_path)
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
@@ -200,13 +204,13 @@ class ImageService:
             # 하나의 TTS 파일 생성 및 S3 업로드
             s3_key = await self._call_naver_tts(final_text, f"combined_{file_id}", storage_name)
 
-            # PDF 생성 (변환된 이미지들로)
-            if len(transformed_image_paths) > 0:
+            # PDF 생성 (처리된 이미지들로)
+            if len(processed_image_paths) > 0:
                 storage_service = StorageService(self.db)
                 pdf_result = await storage_service.create_pdf_from_images(
                     user_id=user["_id"],
                     storage_id=storage_id,
-                    image_paths=transformed_image_paths,  # 변환된 이미지 경로 사용
+                    image_paths=processed_image_paths,  # 처리된 이미지 경로 사용
                     pdf_title=title
                 )
                 logger.info(f"PDF created successfully: {pdf_result}")
