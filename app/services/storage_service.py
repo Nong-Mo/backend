@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail, AudioFileDetail
+from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail, PDFConversionResponse, FileDetailResponse
 from typing import List
 from bson import ObjectId
 from botocore.config import Config
@@ -11,6 +11,11 @@ from app.core.config import (
     S3_BUCKET_NAME
 )
 import boto3
+import img2pdf
+import tempfile
+import os
+import uuid
+import datetime
 
 
 class StorageService:
@@ -133,16 +138,16 @@ class StorageService:
                 detail=f"Failed to fetch storage detail: {str(e)}"
             )
 
-    async def get_file_detail(self, user_email: str, file_id: str) -> AudioFileDetail:
+    async def get_file_detail(self, user_email: str, file_id: str) -> FileDetailResponse:
         """
-        특정 파일의 상세 정보와 오디오 URL을 조회합니다.
+        특정 파일의 상세 정보와 URL을 조회합니다.
 
         Args:
             user_email (str): 사용자 이메일
             file_id (str): 파일 ID
 
         Returns:
-            AudioFileDetail: 파일 상세 정보와 오디오 URL
+            FileDetailResponse: 파일 상세 정보와 URL
         """
         try:
             # 1. 사용자 정보 조회
@@ -159,7 +164,7 @@ class StorageService:
                 raise HTTPException(status_code=404, detail="File not found")
 
             # 3. S3 미리 서명된 URL 생성 (1시간 유효)
-            audio_url = self.s3_client.generate_presigned_url(
+            file_url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': S3_BUCKET_NAME,
@@ -168,12 +173,16 @@ class StorageService:
                 ExpiresIn=3600  # 1시간
             )
 
-            return AudioFileDetail(
+            # 4. 파일 타입 결정
+            file_type = file.get("file_type", "audio")  # 기본값은 "audio"로 설정
+
+            return FileDetailResponse(
                 fileID=str(file["_id"]),
                 fileName=file["title"],
                 uploadDate=file["created_at"],
-                audioUrl=audio_url,
-                contents=file["contents"]
+                fileUrl=file_url,
+                contents=file.get("contents"),  # contents가 없을 수 있으므로 get 사용
+                fileType=file_type
             )
 
         except HTTPException as e:
@@ -182,4 +191,156 @@ class StorageService:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch file detail: {str(e)}"
+            )
+
+    async def convert_to_pdf(self, user_email: str, file_ids: List[str], pdf_title: str) -> PDFConversionResponse:
+        """
+        선택된 이미지들을 PDF로 변환합니다.
+
+        Args:
+            user_email (str): 사용자 이메일
+            file_ids (List[str]): 변환할 이미지 파일 ID 목록
+            pdf_title (str): 사용자가 지정한 PDF 파일 이름
+
+        Returns:
+            PDFConversionResponse: PDF 파일 정보
+        """
+        try:
+            # 1. 사용자 정보 조회
+            user = await self.users_collection.find_one({"email": user_email})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # 2. 파일 정보 조회 및 이미지 다운로드
+            image_files = []
+            with tempfile.TemporaryDirectory() as temp_dir:
+                for file_id in file_ids:
+                    file = await self.db.files.find_one({
+                        "_id": ObjectId(file_id),
+                        "user_id": user["_id"]
+                    })
+                    if not file:
+                        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+                    # S3에서 이미지 다운로드
+                    temp_image_path = os.path.join(temp_dir, f"{file_id}.jpg")
+                    self.s3_client.download_file(
+                        S3_BUCKET_NAME,
+                        file['s3_key'],
+                        temp_image_path
+                    )
+                    image_files.append(temp_image_path)
+
+                # 3. PDF 생성
+                pdf_path = os.path.join(temp_dir, "combined.pdf")
+                with open(pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(image_files))
+
+                # 4. PDF를 S3에 업로드
+                pdf_id = str(uuid.uuid4())
+                s3_key = f"pdfs/{user['_id']}/{pdf_id}.pdf"
+                
+                with open(pdf_path, "rb") as f:
+                    self.s3_client.upload_fileobj(
+                        f,
+                        S3_BUCKET_NAME,
+                        s3_key,
+                        ExtraArgs={'ContentType': 'application/pdf'}
+                    )
+
+                # 5. PDF 파일 메타데이터 저장
+                now = datetime.datetime.now(datetime.UTC)
+                pdf_doc = {
+                    "user_id": user["_id"],
+                    "title": pdf_title,  # 사용자가 지정한 제목 사용
+                    "s3_key": s3_key,
+                    "source_files": file_ids,
+                    "created_at": now,
+                    "updated_at": now,
+                    "file_type": "pdf"
+                }
+                
+                result = await self.db.files.insert_one(pdf_doc)
+                
+                # 6. 미리 서명된 URL 생성
+                pdf_url = self.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={
+                        'Bucket': S3_BUCKET_NAME,
+                        'Key': s3_key
+                    },
+                    ExpiresIn=3600  # 1시간
+                )
+
+                return PDFConversionResponse(
+                    fileID=str(result.inserted_id),
+                    pdfUrl=pdf_url
+                )
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to convert images to PDF: {str(e)}"
+            )
+
+    async def create_pdf_from_images(
+        self, 
+        user_id: ObjectId, 
+        storage_id: str,
+        image_paths: List[str], 
+        pdf_title: str
+    ) -> dict:
+        """
+        이미지들을 PDF로 변환하고 저장합니다.
+
+        Args:
+            user_id (ObjectId): 사용자 ID
+            storage_id (str): 보관함 ID
+            image_paths (List[str]): 변환할 이미지 파일 경로 목록
+            pdf_title (str): PDF 파일 제목
+
+        Returns:
+            dict: PDF 파일 메타데이터
+        """
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 1. PDF 생성
+                pdf_path = os.path.join(temp_dir, "combined.pdf")
+                with open(pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(image_paths))
+
+                # 2. PDF를 S3에 업로드
+                pdf_id = str(uuid.uuid4())
+                s3_key = f"pdfs/{user_id}/{pdf_id}.pdf"
+                
+                with open(pdf_path, "rb") as f:
+                    self.s3_client.upload_fileobj(
+                        f,
+                        S3_BUCKET_NAME,
+                        s3_key,
+                        ExtraArgs={'ContentType': 'application/pdf'}
+                    )
+
+                # 3. PDF 파일 메타데이터 저장
+                now = datetime.datetime.now(datetime.UTC)
+                pdf_doc = {
+                    "storage_id": ObjectId(storage_id),
+                    "user_id": user_id,
+                    "title": f"{pdf_title} (PDF)",
+                    "s3_key": s3_key,
+                    "created_at": now,
+                    "updated_at": now,
+                    "file_type": "pdf"
+                }
+                
+                result = await self.db.files.insert_one(pdf_doc)
+                return {
+                    "file_id": str(result.inserted_id),
+                    "s3_key": s3_key
+                }
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create PDF: {str(e)}"
             )

@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.database import get_database
 from app.services.storage_service import StorageService
-from app.schemas.storage import StorageListResponse, StorageDetailResponse, AudioFileDetail
+from app.schemas.storage import StorageListResponse, StorageDetailResponse, PDFConversionRequest, PDFConversionResponse, FileDetailResponse
 from app.services.image_services import verify_jwt
+from typing import List
 
 router = APIRouter()
 
@@ -58,14 +59,14 @@ async def get_storage_detail(
             detail=f"Failed to fetch storage detail: {str(e)}"
         )
 
-@router.get("/file/{file_id}", response_model=AudioFileDetail)
+@router.get("/files/{file_id}", response_model=FileDetailResponse)
 async def get_file_detail(
     file_id: str,
     user_email: str = Depends(verify_jwt),
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
     """
-    특정 파일의 상세 정보와 오디오 URL을 조회합니다.
+    특정 파일의 상세 정보와 URL을 조회합니다.
     """
     try:
         storage_service = await StorageService.create(db)
@@ -76,4 +77,28 @@ async def get_file_detail(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch file detail: {str(e)}"
+        )
+
+@router.post("/convert-to-pdf", response_model=PDFConversionResponse)
+async def convert_to_pdf(
+    request: PDFConversionRequest,
+    user_email: str = Depends(verify_jwt),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    선택된 이미지들을 PDF로 변환합니다.
+    """
+    try:
+        storage_service = await StorageService.create(db)
+        return await storage_service.convert_to_pdf(
+            user_email=user_email,
+            file_ids=request.file_ids,
+            pdf_title=request.pdf_title
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to convert images to PDF: {str(e)}"
         )
