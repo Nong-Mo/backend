@@ -375,48 +375,51 @@ class ImageService:
             self,
             storage_name: str,
             title: str,
-            file: UploadFile,
+            files: List[UploadFile],
             user_id: str
     ):
-        storage_id = None  # 변수 초기화
+        storage_id = None
+        group_id = str(uuid.uuid4())  # 파일 그룹 ID
 
         try:
-            # 사용자 정보 조회
             user = await self.db["users"].find_one({"email": user_id})
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
-            # OCR 실행
-            ocr_result = await self.call_clova_receipt_ocr(file)
-
-            # S3에 원본 이미지 저장
-            file.file.seek(0)
-            contents = await file.read()
-            file_id = str(uuid.uuid4())
-            s3_key = f"receipts/{user_id}/{file_id}/{file.filename}"
-
-            self.s3_client.put_object(
-                Bucket=S3_BUCKET_NAME,
-                Key=s3_key,
-                Body=contents,
-                ContentType=file.content_type
-            )
-
-            # Storage 업데이트
             storage_id = await self.update_storage_count(
                 user_id=user["_id"],
                 storage_name=storage_name,
                 file_count=1
             )
 
-            # Files 컬렉션에 메타데이터 저장
+            combined_contents = []
+            s3_keys = []
+
+            for idx, file in enumerate(files):
+                ocr_result = await self.call_clova_receipt_ocr(file)
+                combined_contents.append(ocr_result)
+
+                file.file.seek(0)
+                contents = await file.read()
+                s3_key = f"receipts/{user_id}/{group_id}/receipt_{idx + 1}.{file.filename.split('.')[-1]}"
+                s3_keys.append(s3_key)
+
+                self.s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=contents,
+                    ContentType=file.content_type
+                )
+
             file_info = {
                 "title": title,
-                "filename": file.filename,
-                "s3_key": s3_key,
-                "contents": ocr_result,  # OCR 결과 저장
-                "file_size": len(contents),
-                "mime_type": file.content_type
+                "filename": f"combined_{group_id}",
+                "s3_key": s3_keys[0],
+                "additional_s3_keys": s3_keys[1:],
+                "contents": combined_contents,
+                "file_size": sum(f.size for f in files),  # file.read() 대신 size 속성 사용
+                "mime_type": "application/json",
+                "is_primary": True
             }
 
             file_id = await self.save_file_metadata(
@@ -427,11 +430,10 @@ class ImageService:
 
             return {
                 "file_id": file_id,
-                "ocr_result": ocr_result
+                "ocr_results": combined_contents
             }
 
         except Exception as e:
-            # 실패 시 Storage 카운트 롤백
             if storage_id:
                 await self.storage_collection.update_one(
                     {"_id": ObjectId(storage_id)},
