@@ -1,7 +1,7 @@
 import os
 import urllib
 import uuid
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict
 from fastapi import UploadFile, HTTPException, status, Depends, Header
 from app.models.image import ImageMetadata, ImageDocument
 from app.core.config import (
@@ -115,17 +115,23 @@ class ImageService:
         result = await self.files_collection.insert_one(file_doc)
         return str(result.inserted_id)
 
-    async def transform_image(self, image_bytes: bytes, vertices: List[dict]) -> bytes:
+    async def transform_image(self, image_bytes: bytes, vertices: List[Dict[str, float]]) -> bytes:
         """
         이미지를 정점 정보를 기반으로 변환합니다.
         
         Args:
             image_bytes: 원본 이미지 바이트
-            vertices: 변환할 정점 정보 리스트 [{"x": float, "y": float}, ...]
+            vertices: 4개의 정점 좌표 [{x: float, y: float}, ...]
         
         Returns:
             bytes: 변환된 이미지 바이트
         """
+        if len(vertices) != 4:
+            raise HTTPException(
+                status_code=400,
+                detail="Image transformation requires exactly 4 vertices"
+            )
+
         # 이미지 바이트를 numpy 배열로 변환
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -171,10 +177,11 @@ class ImageService:
         title: str,
         files: List[UploadFile],
         user_id: str,
-        vertices_data: Optional[List[List[dict]]] = None
+        vertices_data: Optional[List[Optional[List[Dict[str, float]]]]] = None
     ):
         """
         이미지들을 처리하고 필요한 경우 변환합니다.
+        정점 정보가 없으면 원본 이미지를 그대로 처리합니다.
         """
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(
@@ -203,16 +210,19 @@ class ImageService:
             )
 
             total_size = 0
+            combined_text = []
+            image_paths = []
+
             for idx, file in enumerate(files):
                 try:
                     content = await file.read()
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    # 정점 정보가 있는 경우 이미지 변환
-                    if vertices_data and len(vertices_data) > idx:
+                    # 정점 정보가 있는, 현재 이미지에 대한 vertices가 있는 경우에만 변환
+                    if vertices_data and len(vertices_data) > idx and vertices_data[idx] is not None:
                         content = await self.transform_image(content, vertices_data[idx])
-
+                    
                     # 임시 파일 저장
                     file_path = os.path.join(upload_dir, file.filename)
                     with open(file_path, "wb") as f:
@@ -221,7 +231,8 @@ class ImageService:
                     image_paths.append(file_path)
                     total_size += len(content)
 
-                    # OCR 처리
+                    # OCR 처리를 위해 파일 포인터 리셋
+                    file.file.seek(0)
                     text = await self._call_clova_ocr(file)
                     combined_text.extend(text)
 
