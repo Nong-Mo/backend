@@ -332,6 +332,7 @@ class StorageService:
                     "storage_id": ObjectId(storage_id),
                     "user_id": user_id,
                     "title": f"{pdf_title} (PDF)",
+                    "filename": f"{pdf_title}.pdf",
                     "s3_key": s3_key,
                     "created_at": now,
                     "updated_at": now,
