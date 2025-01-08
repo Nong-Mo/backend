@@ -28,8 +28,6 @@ import ssl
 import logging
 import asyncio
 from app.services.storage_service import StorageService
-import cv2
-import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -114,23 +112,10 @@ class ImageService:
         result = await self.files_collection.insert_one(file_doc)
         return str(result.inserted_id)
 
-    async def process_images(
-        self,
-        storage_name: str,
-        title: str,
-        files: List[UploadFile],
-        pages_data: List[dict],  # 각 페이지의 정점 정보 추가
-        user_id: str = Depends(verify_jwt)
-    ):
+    async def process_images(self, storage_name: str, title: str, files: List[UploadFile],
+                             user_id: str = Depends(verify_jwt)):
         """
         여러 이미지를 하나의 통합된 파일로 처리하는 메서드
-        
-        Args:
-            storage_name: 보관함 이름
-            title: 파일 제목
-            files: 업로드된 이미지 파일 목록
-            pages_data: 각 페이지의 정점 정보 목록
-            user_id: 사용자 이메일
         """
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(
@@ -147,7 +132,7 @@ class ImageService:
         os.makedirs(upload_dir, exist_ok=True)
 
         storage_id = None
-        transformed_image_paths = []  # 변환된 이미지 경로 저장
+        image_paths = []
         combined_text = []
 
         try:
@@ -159,37 +144,22 @@ class ImageService:
             )
 
             total_size = 0
-            for idx, (file, page_data) in enumerate(zip(files, pages_data)):
+            for file in files:
+                file_path = os.path.join(upload_dir, file.filename)
                 try:
-                    # 1. 원본 이미지 저장
-                    original_path = os.path.join(upload_dir, f"original_{idx}.jpg")
                     content = await file.read()
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    with open(original_path, "wb") as f:
+                    total_size += len(content)
+                    with open(file_path, "wb") as f:
                         f.write(content)
 
-                    # 2. 이미지 시점 변환
-                    transformed_path = os.path.join(upload_dir, f"transformed_{idx}.jpg")
-                    transformed_image = await self._transform_image(
-                        original_path,
-                        page_data['vertices']
-                    )
-                    cv2.imwrite(transformed_path, transformed_image)
-                    transformed_image_paths.append(transformed_path)
+                    image_paths.append(file_path)
 
-                    # 3. 변환된 이미지로 OCR 수행
-                    with open(transformed_path, "rb") as f:
-                        transformed_file = UploadFile(
-                            file=f,
-                            filename=f"transformed_{idx}.jpg",
-                            content_type="image/jpeg"
-                        )
-                        text = await self._call_clova_ocr(transformed_file)
-                        combined_text.extend(text)
-
-                    total_size += os.path.getsize(transformed_path)
+                    # OCR 텍스트 추출
+                    text = await self._call_clova_ocr(file)
+                    combined_text.extend(text)  # 모든 텍스트를 하나의 리스트에 추가
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
@@ -200,18 +170,7 @@ class ImageService:
             # 하나의 TTS 파일 생성 및 S3 업로드
             s3_key = await self._call_naver_tts(final_text, f"combined_{file_id}", storage_name)
 
-            # PDF 생성 (변환된 이미지들로)
-            if len(transformed_image_paths) > 0:
-                storage_service = StorageService(self.db)
-                pdf_result = await storage_service.create_pdf_from_images(
-                    user_id=user["_id"],
-                    storage_id=storage_id,
-                    image_paths=transformed_image_paths,  # 변환된 이미지 경로 사용
-                    pdf_title=title
-                )
-                logger.info(f"PDF created successfully: {pdf_result}")
-
-            # Files 컬렉션에 메타데이터 저장
+            # Files 컬렉션에 단일 메타데이터 저장
             file_info = {
                 "title": title,
                 "filename": f"combined_{file_id}",
@@ -227,6 +186,17 @@ class ImageService:
                 user_id=user["_id"],
                 file_info=file_info
             )
+
+            # PDF 생성
+            if len(image_paths) > 0:
+                storage_service = StorageService(self.db)
+                pdf_result = await storage_service.create_pdf_from_images(
+                    user_id=user["_id"],
+                    storage_id=storage_id,
+                    image_paths=image_paths,
+                    pdf_title=title
+                )
+                logger.info(f"PDF created successfully: {pdf_result}")
 
             return ImageDocument(
                 title=title,
@@ -249,37 +219,6 @@ class ImageService:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
-
-    async def _transform_image(self, image_path: str, vertices: List[dict]) -> np.ndarray:
-        """
-        이미지를 크롭하고 시점 변환을 수행하는 메서드
-        
-        Args:
-            image_path: 원본 이미지 경로
-            vertices: 4개의 꼭지점 좌표 ({x, y} 형식)
-        """
-        image = cv2.imread(image_path)
-        
-        # vertices 리스트를 numpy 배열로 변환
-        src_points = np.float32([[v['x'], v['y']] for v in vertices])
-        
-        width = max(
-            np.linalg.norm(src_points[0] - src_points[1]),
-            np.linalg.norm(src_points[2] - src_points[3])
-        )
-        height = max(
-            np.linalg.norm(src_points[0] - src_points[3]),
-            np.linalg.norm(src_points[1] - src_points[2])
-        )
-        dst_points = np.float32([
-            [0, 0],
-            [width - 1, 0],
-            [width - 1, height - 1],
-            [0, height - 1]
-        ])
-        
-        matrix = cv2.getPerspectiveTransform(src_points, dst_points)
-        return cv2.warpPerspective(image, matrix, (int(width), int(height)))
 
     async def _call_clova_ocr(self, file: UploadFile):
         """
