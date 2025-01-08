@@ -115,45 +115,35 @@ class ImageService:
     async def process_images(self, storage_name: str, title: str, files: List[UploadFile],
                              user_id: str = Depends(verify_jwt)):
         """
-        이미지 처리를 수행하는 메서드
-
-        Args:
-            storage_name (str): 보관함 이름 ("책", "영수증" 등)
-            title (str): 사용자가 지정한 파일 제목
-            files (List[UploadFile]): 처리할 파일 목록
-            user_id (str): 사용자 이메일 (JWT에서 추출)
+        여러 이미지를 하나의 통합된 파일로 처리하는 메서드
         """
-        # 보관함 이름 검증
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid storage name. Allowed names are: {', '.join(self.ALLOWED_STORAGE_NAMES)}"
             )
 
-        # 사용자 정보 조회
         user = await self.db["users"].find_one({"email": user_id})
         if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
+            raise HTTPException(status_code=404, detail="User not found")
 
         file_id = str(uuid.uuid4())
         upload_dir = f"/tmp/{user_id}/{file_id}"
         os.makedirs(upload_dir, exist_ok=True)
 
-        processed_files = []
         storage_id = None
-        image_paths = []  # PDF 변환을 위한 이미지 경로 저장
+        image_paths = []
+        combined_text = []
 
         try:
-            # Storage 업데이트
+            # Storage 업데이트 - 파일 하나만 추가
             storage_id = await self.update_storage_count(
                 user_id=user["_id"],
                 storage_name=storage_name,
-                file_count=len(files)
+                file_count=1  # 여러 이미지를 하나의 파일로 처리하므로 1
             )
 
+            total_size = 0
             for file in files:
                 file_path = os.path.join(upload_dir, file.filename)
                 try:
@@ -161,45 +151,43 @@ class ImageService:
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
+                    total_size += len(content)
                     with open(file_path, "wb") as f:
                         f.write(content)
-                    
-                    image_paths.append(file_path)  # PDF 변환을 위해 경로 저장
+
+                    image_paths.append(file_path)
 
                     # OCR 텍스트 추출
                     text = await self._call_clova_ocr(file)
-                    combined_text = " ".join(text)
-
-                    # TTS 변환 및 S3 업로드
-                    s3_key = await self._call_naver_tts(combined_text, file.filename, storage_name)
-
-                    # Files 컬렉션에 저장할 메타데이터 준비
-                    file_info = {
-                        "title": title,  # 사용자가 지정한 제목
-                        "filename": file.filename,
-                        "s3_key": s3_key,
-                        "contents": combined_text,
-                        "file_size": len(content),
-                        "mime_type": file.content_type
-                    }
-
-                    # Files 컬렉션에 메타데이터 저장
-                    file_id = await self.save_file_metadata(
-                        storage_id=storage_id,
-                        user_id=user["_id"],
-                        file_info=file_info
-                    )
-
-                    processed_files.append(ImageMetadata(
-                        filename=file.filename,
-                        content_type=file.content_type,
-                        size=len(content)
-                    ))
+                    combined_text.extend(text)  # 모든 텍스트를 하나의 리스트에 추가
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
 
-            # 모든 이미지 처리가 완료된 후 PDF 생성
+            # 모든 텍스트를 하나로 합침
+            final_text = " ".join(combined_text)
+
+            # 하나의 TTS 파일 생성 및 S3 업로드
+            s3_key = await self._call_naver_tts(final_text, f"combined_{file_id}", storage_name)
+
+            # Files 컬렉션에 단일 메타데이터 저장
+            file_info = {
+                "title": title,
+                "filename": f"combined_{file_id}",
+                "s3_key": s3_key,
+                "contents": final_text,
+                "file_size": total_size,
+                "mime_type": "multipart/mixed",  # 여러 이미지가 포함된 복합 파일임을 표시
+                "original_files": [f.filename for f in files]  # 원본 파일명들 저장
+            }
+
+            file_id = await self.save_file_metadata(
+                storage_id=storage_id,
+                user_id=user["_id"],
+                file_info=file_info
+            )
+
+            # PDF 생성
             if len(image_paths) > 0:
                 storage_service = StorageService(self.db)
                 pdf_result = await storage_service.create_pdf_from_images(
@@ -209,21 +197,24 @@ class ImageService:
                     pdf_title=title
                 )
                 logger.info(f"PDF created successfully: {pdf_result}")
-                
-            image_doc = ImageDocument(
+
+            return ImageDocument(
                 title=title,
                 file_id=file_id,
-                processed_files=processed_files,
+                processed_files=[ImageMetadata(
+                    filename=f"combined_{file_id}",
+                    content_type="multipart/mixed",
+                    size=total_size
+                )],
                 created_at=datetime.datetime.now(datetime.UTC).isoformat()
             )
-            return image_doc
 
         except Exception as e:
             # Storage 카운트 롤백
             if storage_id:
                 await self.storage_collection.update_one(
                     {"_id": ObjectId(storage_id)},
-                    {"$inc": {"file_count": -len(files)}}
+                    {"$inc": {"file_count": -1}}
                 )
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
         finally:
