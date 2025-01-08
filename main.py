@@ -8,7 +8,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://6c68-118-34-210-44.ngrok-free.app",
+        "https://e336-175-195-226-193.ngrok-free.app",
         "http://ec2-54-180-149-98.ap-northeast-2.compute.amazonaws.com",
         "https://nongmo-a2d.com",
         "*"
