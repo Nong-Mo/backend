@@ -173,15 +173,19 @@ class StorageService:
                 ExpiresIn=3600  # 1시간
             )
 
-            # 4. 파일 타입 결정
-            file_type = file.get("file_type", "audio")  # 기본값은 "audio"로 설정
+            # 4. 파일 타입 결정 (mime_type 기반)
+            file_type = "audio"  # 기본값
+            if file.get("mime_type") == "application/pdf":
+                file_type = "pdf"
+            elif file.get("mime_type", "").startswith("image/"):
+                file_type = "image"
 
             return FileDetailResponse(
                 fileID=str(file["_id"]),
                 fileName=file["title"],
                 uploadDate=file["created_at"],
                 fileUrl=file_url,
-                contents=file.get("contents"),  # contents가 없을 수 있으므로 get 사용
+                contents=file.get("contents"),
                 fileType=file_type
             )
 
@@ -252,12 +256,13 @@ class StorageService:
                 now = datetime.datetime.now(datetime.UTC)
                 pdf_doc = {
                     "user_id": user["_id"],
-                    "title": pdf_title,  # 사용자가 지정한 제목 사용
+                    "title": pdf_title,
                     "s3_key": s3_key,
                     "source_files": file_ids,
                     "created_at": now,
                     "updated_at": now,
-                    "file_type": "pdf"
+                    "mime_type": "application/pdf",
+                    "file_size": os.path.getsize(pdf_path)
                 }
                 
                 result = await self.db.files.insert_one(pdf_doc)
@@ -330,7 +335,8 @@ class StorageService:
                     "s3_key": s3_key,
                     "created_at": now,
                     "updated_at": now,
-                    "file_type": "pdf"
+                    "mime_type": "application/pdf",
+                    "file_size": os.path.getsize(pdf_path)
                 }
                 
                 result = await self.db.files.insert_one(pdf_doc)
