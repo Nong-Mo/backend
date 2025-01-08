@@ -186,7 +186,7 @@ class ImageService:
                         file_for_ocr = UploadFile(
                             file=f,
                             filename=f"image_{idx}.jpg",
-                            content_type="image/jpeg"
+                            media_type="image/jpeg"
                         )
                         text = await self._call_clova_ocr(file_for_ocr)
                         combined_text.extend(text)
@@ -321,7 +321,7 @@ class ImageService:
 
             payload = {'message': json.dumps(request_json).encode('UTF-8')}
             files = [
-                ('file', (file.filename, contents, file.content_type))  # Content-Type 동적으로 설정
+                ('file', (file.filename, contents, file.media_type))  # content_type 대신 media_type 사용
             ]
             headers = {
                 'X-OCR-SECRET': NAVER_CLOVA_OCR_SECRET
