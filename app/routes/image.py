@@ -1,11 +1,12 @@
 from fastapi import APIRouter, UploadFile, Depends, Form, File, HTTPException
-from app.schemas.image import ImageUploadResponse
+from app.schemas.image import ImageUploadResponse, Point, PageVertices
 from app.services.image_services import ImageService
-from typing import List
+from typing import List, Optional
 from app.services.image_services import verify_jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from typing import Dict
+import json
 
 router = APIRouter()
 
@@ -18,16 +19,22 @@ async def upload_images(
         storage_name: str = Form(...),
         title: str = Form(...),
         files: List[UploadFile] = File(...),
+        pages_vertices_data: Optional[str] = Form(None),  # 문자열로 받음
         user_id: str = Depends(verify_jwt),
         image_service: ImageService = Depends(get_image_service)
 ):
     """
-    이미지를 업로드하고 OCR 처리 후 MP3와 PDF 파일을 생성합니다.
+    이미지를 업로드하고 필요한 경우 정점 정보를 기반으로 이미지를 변환한 후 OCR 처리합니다.
 
     Args:
         storage_name: 업로드할 보관함 이름 ("책", "영수증", "굿즈", "필름 사진", "서류", "티켓")
         title: 사용자가 지정한 파일 제목
         files: 업로드할 이미지 파일 목록
+        pages_vertices_data: 이미지별 4점 좌표 리스트 또는 null (선택적)
+            예시: [
+                [{x: 85.5, y: 307.8}, {x: 231.6, y: 306.8}, {x: 240.1, y: 572.4}, {x: 87.6, y: 574.5}],
+                null
+            ]
         user_id: JWT에서 추출한 사용자 ID (이메일)
         image_service: ImageService 인스턴스 - OCR 서비스 처리 담당
     Returns:
@@ -40,11 +47,49 @@ async def upload_images(
         - 파일 상세 조회 시 두 파일 모두 접근 가능합니다.
     """
     try:
+        # 문자열로 받은 정점 데이터를 파싱
+        vertices_data = None
+        if pages_vertices_data:
+            try:
+                parsed_data = json.loads(pages_vertices_data)
+                # 데이터 검증
+                if not isinstance(parsed_data, list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Vertices data must be a list"
+                    )
+                
+                # null이 아닌 vertices만 포함하는 리스트 생성
+                vertices_data = []
+                for vertices in parsed_data:
+                    if vertices is not None:  # null이 아닌 경우에만 검증
+                        if not isinstance(vertices, list) or len(vertices) != 4:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Each vertices set must have exactly 4 points"
+                            )
+                        for point in vertices:
+                            if not isinstance(point, dict) or not all(k in point for k in ('x', 'y')):
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail="Each point must have 'x' and 'y' coordinates"
+                                )
+                        vertices_data.append(vertices)
+                    else:
+                        vertices_data.append(None)
+
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid JSON format for vertices data"
+                )
+
         result = await image_service.process_images(
             storage_name=storage_name,
             title=title,
             files=files,
-            user_id=user_id
+            user_id=user_id,
+            vertices_data=vertices_data
         )
         return ImageUploadResponse(
             file_id=result.file_id,

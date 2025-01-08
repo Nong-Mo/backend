@@ -1,7 +1,7 @@
 import os
 import urllib
 import uuid
-from typing import List
+from typing import List, Optional, Dict
 from fastapi import UploadFile, HTTPException, status, Depends, Header
 from app.models.image import ImageMetadata, ImageDocument
 from app.core.config import (
@@ -28,6 +28,8 @@ import ssl
 import logging
 import asyncio
 from app.services.storage_service import StorageService
+import cv2
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -113,10 +115,73 @@ class ImageService:
         result = await self.files_collection.insert_one(file_doc)
         return str(result.inserted_id)
 
-    async def process_images(self, storage_name: str, title: str, files: List[UploadFile],
-                             user_id: str = Depends(verify_jwt)):
+    async def transform_image(self, image_bytes: bytes, vertices: List[Dict[str, float]]) -> bytes:
         """
-        여러 이미지를 하나의 통합된 파일로 처리하는 메서드
+        이미지를 정점 정보를 기반으로 변환합니다.
+        
+        Args:
+            image_bytes: 원본 이미지 바이트
+            vertices: 4개의 정점 좌표 [{x: float, y: float}, ...]
+        
+        Returns:
+            bytes: 변환된 이미지 바이트
+        """
+        if len(vertices) != 4:
+            raise HTTPException(
+                status_code=400,
+                detail="Image transformation requires exactly 4 vertices"
+            )
+
+        # 이미지 바이트를 numpy 배열로 변환
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Invalid image data")
+
+        # 원본 이미지의 정점 좌표
+        src_points = np.float32([[v["x"], v["y"]] for v in vertices])
+        
+        # 변환된 이미지의 크기 계산
+        width = max(
+            np.linalg.norm(src_points[1] - src_points[0]),
+            np.linalg.norm(src_points[2] - src_points[3])
+        )
+        height = max(
+            np.linalg.norm(src_points[3] - src_points[0]),
+            np.linalg.norm(src_points[2] - src_points[1])
+        )
+        
+        # 대상 정점 좌표 설정
+        dst_points = np.float32([
+            [0, 0],
+            [width - 1, 0],
+            [width - 1, height - 1],
+            [0, height - 1]
+        ])
+        
+        # 투시 변환 행렬 계산 및 적용
+        matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+        transformed = cv2.warpPerspective(img, matrix, (int(width), int(height)))
+        
+        # 변환된 이미지를 바이트로 인코딩
+        success, transformed_bytes = cv2.imencode('.jpg', transformed)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode transformed image")
+            
+        return transformed_bytes.tobytes()
+
+    async def process_images(
+        self,
+        storage_name: str,
+        title: str,
+        files: List[UploadFile],
+        user_id: str,
+        vertices_data: Optional[List[Optional[List[Dict[str, float]]]]] = None
+    ):
+        """
+        이미지들을 처리하고 필요한 경우 변환합니다.
+        정점 정보가 없으면 원본 이미지를 그대로 처리합니다.
         """
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(
@@ -145,22 +210,31 @@ class ImageService:
             )
 
             total_size = 0
-            for file in files:
-                file_path = os.path.join(upload_dir, file.filename)
+            combined_text = []
+            image_paths = []
+
+            for idx, file in enumerate(files):
                 try:
                     content = await file.read()
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    total_size += len(content)
+                    # 정점 정보가 있는, 현재 이미지에 대한 vertices가 있는 경우에만 변환
+                    if vertices_data and len(vertices_data) > idx and vertices_data[idx] is not None:
+                        content = await self.transform_image(content, vertices_data[idx])
+                    
+                    # 임시 파일 저장
+                    file_path = os.path.join(upload_dir, file.filename)
                     with open(file_path, "wb") as f:
                         f.write(content)
-
+                    
                     image_paths.append(file_path)
+                    total_size += len(content)
 
-                    # OCR 텍스트 추출
+                    # OCR 처리를 위해 파일 포인터 리셋
+                    file.file.seek(0)
                     text = await self._call_clova_ocr(file)
-                    combined_text.extend(text)  # 모든 텍스트를 하나의 리스트에 추가
+                    combined_text.extend(text)
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
