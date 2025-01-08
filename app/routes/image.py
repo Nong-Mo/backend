@@ -32,7 +32,7 @@ async def upload_images(
         files: 업로드할 이미지 파일 목록
         pages_vertices_data: 이미지 변환을 위한 정점 정보 (선택적)
         user_id: JWT에서 추출한 사용자 ID (이메일)
-
+        image_service: ImageService 인스턴스 - OCR 서비스 처리 담당
     Returns:
         ImageUploadResponse:
             - file_id: 생성된 MP3 파일의 ID (primary 파일)
@@ -73,28 +73,29 @@ async def upload_images(
 
 @router.post("/receipt/ocr", response_model=Dict)
 async def process_receipt_ocr(
-        storage_name: str = Form(...),  # 보관함 이름 ("영수증")
-        title: str = Form(...),  # 사용자가 지정한 파일 제목
-        file: UploadFile = File(...),
-        user_id: str = Depends(verify_jwt),
-        image_service: ImageService = Depends(get_image_service)
+    storage_name: str = Form(...),
+    title: str = Form(...),
+    files: List[UploadFile] = File(...),  # 파일 목록으로 변경
+    user_id: str = Depends(verify_jwt),
+    image_service: ImageService = Depends(get_image_service)
 ):
     """
-    영수증 이미지를 업로드하고 특화된 OCR을 수행하여 결과를 반환 및 저장
-    Args:
-        storage_name: 업로드할 보관함 이름 ("영수증")
-        title: 사용자가 지정한 파일 제목
-        file: 업로드할 영수증 이미지 파일
-        user_id: JWT에서 추출한 사용자 ID
-        image_service: OCR 서비스를 처리하는 ImageService 인스턴스
-    Returns:
-        Dict: OCR 결과 및 저장된 파일 정보
-    """
+   다중 영수증 이미지 OCR 처리
+
+   Args:
+       storage_name: 보관함 이름 ("영수증")
+       title: 파일 제목
+       files: 영수증 이미지 파일 목록
+       user_id: 사용자 ID
+       image_service: ImageService 인스턴스 - OCR 서비스 처리 담당
+   Returns:
+       Dict: OCR 결과 및 파일 정보
+   """
     try:
         result = await image_service.process_receipt_ocr(
             storage_name=storage_name,
             title=title,
-            file=file,
+            files=files,
             user_id=user_id
         )
         return result
