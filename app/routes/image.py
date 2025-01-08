@@ -19,7 +19,7 @@ async def upload_images(
     storage_name: str = Form(...),  # 보관함 이름 ("책", "영수증" 등)
     title: str = Form(...),         # 사용자가 지정한 파일 제목
     files: List[UploadFile] = File(...),
-    pages_vertices_data: str = Form(None),   # 선택적 정점 정보
+    pages_data: str = Form(...),  # JSON string of pages data
     user_id: str = Depends(verify_jwt),
     image_service: ImageService = Depends(get_image_service)
 ):
@@ -30,24 +30,23 @@ async def upload_images(
         storage_name: 업로드할 보관함 이름 ("책", "영수증", "굿즈", "필름 사진", "서류", "티켓")
         title: 사용자가 지정한 파일 제목
         files: 업로드할 이미지 파일 목록
-        pages_vertices_data: 각 페이지의 모서리 좌표 정보 목록 (선택적)
+        pages_data: 각 페이지의 정점 정보 목록
         user_id: JWT에서 추출한 사용자 ID (이메일)
     """
     try:
-        vertices_list = None
-        if pages_vertices_data:
-            vertices_list = json.loads(pages_vertices_data)
-            if len(vertices_list) != len(files):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Number of files and vertices data must match"
-                )
+        # pages_data JSON 파싱
+        pages_list = json.loads(pages_data)
+        if len(pages_list) != len(files):
+            raise HTTPException(
+                status_code=400,
+                detail="Number of files and pages data must match"
+            )
 
         result = await image_service.process_images(
             storage_name=storage_name,
             title=title,
             files=files,
-            pages_vertices_data=vertices_list,
+            pages_data=pages_list,
             user_id=user_id
         )
         return ImageUploadResponse(
@@ -57,7 +56,7 @@ async def upload_images(
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=400,
-            detail="Invalid vertices data format"
+            detail="Invalid pages data format"
         )
     except Exception as e:
         # 에러 메시지를 그대로 클라이언트에 전달
