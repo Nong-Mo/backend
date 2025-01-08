@@ -19,5 +19,3 @@ python-multipart==0.0.20
 aiohttp==3.11.11
 google-generativeai==0.8.3
 img2pdf==0.5.1
-opencv-python==4.10.0.84
-numpy==2.2.1
