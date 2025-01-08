@@ -202,13 +202,14 @@ class ImageService:
             # 모든 이미지 처리가 완료된 후 PDF 생성
             if len(image_paths) > 0:
                 storage_service = StorageService(self.db)
-                await storage_service.create_pdf_from_images(
+                pdf_result = await storage_service.create_pdf_from_images(
                     user_id=user["_id"],
                     storage_id=storage_id,
                     image_paths=image_paths,
                     pdf_title=title
                 )
-
+                logger.info(f"PDF created successfully: {pdf_result}")
+                
             image_doc = ImageDocument(
                 title=title,
                 file_id=file_id,
