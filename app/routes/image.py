@@ -7,8 +7,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from typing import Dict
 import json
+import logging
 
 router = APIRouter()
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 # ImageService 인스턴스를 생성하는 의존성 함수
 async def get_image_service(db: AsyncIOMotorClient = Depends(get_database)):
@@ -47,11 +52,13 @@ async def upload_images(
         - 파일 상세 조회 시 두 파일 모두 접근 가능합니다.
     """
     try:
+        logger.info(f"Received pages_vertices_data: {pages_vertices_data}")
         # 문자열로 받은 정점 데이터를 파싱
         vertices_data = None
         if pages_vertices_data:
             try:
                 parsed_data = json.loads(pages_vertices_data)
+                logger.info(f"Parsed vertices data: {parsed_data}")
                 # 데이터 검증
                 if not isinstance(parsed_data, list):
                     raise HTTPException(
@@ -61,28 +68,37 @@ async def upload_images(
                 
                 # null이 아닌 vertices만 포함하는 리스트 생성
                 vertices_data = []
-                for vertices in parsed_data:
+                for idx, vertices in enumerate(parsed_data):
+                    logger.debug(f"Processing vertices set {idx}: {vertices}")
                     if vertices is not None:  # null이 아닌 경우에만 검증
                         if not isinstance(vertices, list) or len(vertices) != 4:
+                            logger.error(f"Invalid vertices format at index {idx}: {vertices}")
                             raise HTTPException(
                                 status_code=400,
                                 detail="Each vertices set must have exactly 4 points"
                             )
-                        for point in vertices:
+                        for point_idx, point in enumerate(vertices):
+                            logger.debug(f"Checking point {point_idx} in set {idx}: {point}")
                             if not isinstance(point, dict) or not all(k in point for k in ('x', 'y')):
+                                logger.error(f"Invalid point format at index {idx}, point {point_idx}: {point}")
                                 raise HTTPException(
                                     status_code=400,
                                     detail="Each point must have 'x' and 'y' coordinates"
                                 )
                         vertices_data.append(vertices)
+                        logger.info(f"Added vertices set {idx}: {vertices}")
                     else:
                         vertices_data.append(None)
+                        logger.info(f"Added None for vertices set {idx}")
 
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {str(e)}, received data: {pages_vertices_data}")
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid JSON format for vertices data"
                 )
+
+        logger.info(f"Final vertices_data being sent to process_images: {vertices_data}")
 
         result = await image_service.process_images(
             storage_name=storage_name,

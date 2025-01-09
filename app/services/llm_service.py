@@ -16,7 +16,7 @@ class LLMService:
 
         # Gemini API 설정
         genai.configure(api_key=GOOGLE_API_KEY)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
 
     async def verify_user_access(self, user_id: str):
         user = await self.users_collection.find_one({"email": user_id})

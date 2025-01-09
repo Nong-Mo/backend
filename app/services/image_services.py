@@ -30,6 +30,7 @@ import asyncio
 from app.services.storage_service import StorageService
 import cv2
 import numpy as np
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -126,7 +127,9 @@ class ImageService:
         Returns:
             bytes: 변환된 이미지 바이트
         """
+        logger.info(f"Starting image transformation with vertices: {vertices}")
         if len(vertices) != 4:
+            logger.error(f"Invalid number of vertices: {len(vertices)}")
             raise HTTPException(
                 status_code=400,
                 detail="Image transformation requires exactly 4 vertices"
@@ -137,10 +140,12 @@ class ImageService:
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if img is None:
+            logger.error("Failed to decode image data")
             raise HTTPException(status_code=400, detail="Invalid image data")
 
         # 원본 이미지의 정점 좌표
         src_points = np.float32([[v["x"], v["y"]] for v in vertices])
+        logger.debug(f"Source points: {src_points}")
         
         # 변환된 이미지의 크기 계산
         width = max(
@@ -151,7 +156,8 @@ class ImageService:
             np.linalg.norm(src_points[3] - src_points[0]),
             np.linalg.norm(src_points[2] - src_points[1])
         )
-        
+        logger.debug(f"Calculated dimensions - width: {width}, height: {height}")
+
         # 대상 정점 좌표 설정
         dst_points = np.float32([
             [0, 0],
@@ -159,16 +165,20 @@ class ImageService:
             [width - 1, height - 1],
             [0, height - 1]
         ])
+        logger.debug(f"Destination points: {dst_points}")
         
         # 투시 변환 행렬 계산 및 적용
         matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+        logger.debug(f"Transformation matrix: {matrix}")
         transformed = cv2.warpPerspective(img, matrix, (int(width), int(height)))
         
         # 변환된 이미지를 바이트로 인코딩
         success, transformed_bytes = cv2.imencode('.jpg', transformed)
         if not success:
+            logger.error("Failed to encode transformed image")
             raise HTTPException(status_code=500, detail="Failed to encode transformed image")
             
+        logger.info("Image transformation completed successfully")
         return transformed_bytes.tobytes()
 
     async def process_images(
@@ -183,6 +193,7 @@ class ImageService:
         이미지들을 처리하고 필요한 경우 변환합니다.
         정점 정보가 없으면 원본 이미지를 그대로 처리합니다.
         """
+        logger.info(f"Starting process_images with vertices_data: {vertices_data}")
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(
                 status_code=400,
@@ -216,25 +227,43 @@ class ImageService:
             for idx, file in enumerate(files):
                 try:
                     content = await file.read()
+                    logger.debug(f"Processing file {idx}: {file.filename}")
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    # 정점 정보가 있는, 현재 이미지에 대한 vertices가 있는 경우에만 변환
+                    # 정점 정보가 있는 경우 이미지 변환
+                    transformed_content = content  # 기본값은 원본 이미지
                     if vertices_data and len(vertices_data) > idx and vertices_data[idx] is not None:
-                        content = await self.transform_image(content, vertices_data[idx])
+                        logger.info(f"Transforming image {idx} with vertices: {vertices_data[idx]}")
+                        transformed_content = await self.transform_image(content, vertices_data[idx])
+                        logger.info(f"Image {idx} transformation completed")
+                    else:
+                        logger.info(f"Skipping transformation for image {idx} - no vertices data")
                     
-                    # 임시 파일 저장
+                    # 임시 파일 저장 (변환된 이미지 또는 원본)
                     file_path = os.path.join(upload_dir, file.filename)
                     with open(file_path, "wb") as f:
-                        f.write(content)
+                        f.write(transformed_content)
                     
                     image_paths.append(file_path)
-                    total_size += len(content)
+                    total_size += len(transformed_content)
 
-                    # OCR 처리를 위해 파일 포인터 리셋
-                    file.file.seek(0)
-                    text = await self._call_clova_ocr(file)
+                    # 변환된 이미지로 OCR 처리
+                    # 임시 파일로 새로운 UploadFile 객체 생성
+                    with open(file_path, "rb") as f:
+                        file_content = f.read()
+                    
+                    # OCR 처리를 위한 새로운 UploadFile 객체 생성
+                    # JPEG 형식으로 변환된 이미지이므로 content_type을 'image/jpeg'로 고정
+                    transformed_file = UploadFile(
+                        filename=file.filename,
+                        file=BytesIO(file_content),
+                        headers={"content-type": "image/jpeg"}  # content_type 대신 headers 사용
+                    )
+                    
+                    text = await self._call_clova_ocr(transformed_file)
                     combined_text.extend(text)
+                    await transformed_file.close()
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
