@@ -30,6 +30,7 @@ import asyncio
 from app.services.storage_service import StorageService
 import cv2
 import numpy as np
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -230,26 +231,39 @@ class ImageService:
                     if not content:
                         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
 
-                    # 정점 정보가 있는, 현재 이미지에 대한 vertices가 있는 경우에만 변환
+                    # 정점 정보가 있는 경우 이미지 변환
+                    transformed_content = content  # 기본값은 원본 이미지
                     if vertices_data and len(vertices_data) > idx and vertices_data[idx] is not None:
                         logger.info(f"Transforming image {idx} with vertices: {vertices_data[idx]}")
-                        content = await self.transform_image(content, vertices_data[idx])
+                        transformed_content = await self.transform_image(content, vertices_data[idx])
                         logger.info(f"Image {idx} transformation completed")
                     else:
                         logger.info(f"Skipping transformation for image {idx} - no vertices data")
                     
-                    # 임시 파일 저장
+                    # 임시 파일 저장 (변환된 이미지 또는 원본)
                     file_path = os.path.join(upload_dir, file.filename)
                     with open(file_path, "wb") as f:
-                        f.write(content)
+                        f.write(transformed_content)
                     
                     image_paths.append(file_path)
-                    total_size += len(content)
+                    total_size += len(transformed_content)
 
-                    # OCR 처리를 위해 파일 포인터 리셋
-                    file.file.seek(0)
-                    text = await self._call_clova_ocr(file)
+                    # 변환된 이미지로 OCR 처리
+                    # 임시 파일로 새로운 UploadFile 객체 생성
+                    with open(file_path, "rb") as f:
+                        file_content = f.read()
+                    
+                    # OCR 처리를 위한 새로운 UploadFile 객체 생성
+                    # JPEG 형식으로 변환된 이미지이므로 content_type을 'image/jpeg'로 고정
+                    transformed_file = UploadFile(
+                        filename=file.filename,
+                        file=BytesIO(file_content),
+                        headers={"content-type": "image/jpeg"}  # content_type 대신 headers 사용
+                    )
+                    
+                    text = await self._call_clova_ocr(transformed_file)
                     combined_text.extend(text)
+                    await transformed_file.close()
 
                 except (IOError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
