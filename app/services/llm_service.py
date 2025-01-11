@@ -15,6 +15,7 @@ from app.core.config import GOOGLE_API_KEY, S3_REGION_NAME, AWS_SECRET_ACCESS_KE
 import logging
 import datetime
 from typing import Dict
+from app.models.llm import FileSearchResult
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -259,6 +260,46 @@ class LLMService:
                 detail=f"단편소설 저장 중 오류가 발생했습니다: {str(e)}"
             )
 
+    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
+        try:
+            user = await self.users_collection.find_one({"email": user_id})
+            if not user:
+                return {
+                    "type": "error",
+                    "message": "사용자를 찾을 수 없습니다.",
+                    "data": None
+                }
+
+            file = await self.files_collection.find_one({
+                "user_id": user["_id"],
+                "title": {"$regex": query, "$options": "i"}
+            })
+
+            if file:
+                return {
+                    "type": "file_found",
+                    "message": f"'{file['title']}' 파일을 찾았습니다. 클릭하시면 해당 파일로 이동합니다.",
+                    "data": {
+                        "file_id": str(file["_id"]),
+                        "storage_id": str(file["storage_id"]),
+                        "title": file["title"]
+                    }
+                }
+
+            return {
+                "type": "chat",
+                "message": f"'{query}'와 일치하는 파일을 찾을 수 없습니다.",
+                "data": None
+            }
+
+        except Exception as e:
+            logger.error(f"Error searching file for user {user_id}: {str(e)}")
+            return {
+                "type": "error",
+                "message": "파일 검색 중 오류가 발생했습니다.",
+                "data": None
+            }
+
     async def process_query(self, user_id: str, query: str, new_chat: bool = False):
         """
         사용자의 질문을 처리하고 AI 응답을 생성합니다.
@@ -269,7 +310,7 @@ class LLMService:
             new_chat (bool, optional): 새로운 채팅 세션 시작 여부
 
         Returns:
-            str: AI의 응답 텍스트
+            FileSearchResult: 검색 결과 또는 채팅 응답
 
         Raises:
             HTTPException: AI 응답 생성 실패 시 500 에러
@@ -287,7 +328,31 @@ class LLMService:
                 new_chat
             )
 
-            # 사용자 파일 목록 조회
+            # 파일 검색 의도 파악
+            search_prompt = f"""
+            사용자의 질문이 파일 검색 요청인지 파악해주세요.
+            질문: {query}
+
+            규칙:
+            1. "~~ 파일 찾아줘", "~~ 문서 어디있어?" 등의 패턴 인식
+            2. 검색할 파일명만 추출
+            3. 검색 의도가 있으면 "SEARCH:파일명" 형식으로 반환
+            4. 검색 의도가 없으면 "CHAT" 반환
+            """
+
+            intention = chat.send_message(search_prompt)
+
+            if intention.text.startswith("SEARCH:"):
+                search_query = intention.text.split("SEARCH:")[1].strip()
+                result = await self.search_file(user_id, search_query)
+
+                # 채팅 기록 저장
+                await self.save_chat_message(user_id, "user", query)
+                await self.save_chat_message(user_id, "model", result["message"])
+
+                return result
+
+            # 일반 대화 처리
             files = await self.get_user_files(user_id)
             logger.debug(f"Found {len(files)} files for user")
 
@@ -296,7 +361,11 @@ class LLMService:
                 response = chat.send_message("파일을 찾을 수 없습니다.")
                 await self.save_chat_message(user_id, "user", query)
                 await self.save_chat_message(user_id, "model", response.text)
-                return response.text
+                return {
+                    "type": "chat",
+                    "message": response.text,
+                    "data": None
+                }
 
             # 파일 정보를 컨텍스트로 변환
             context = []
@@ -321,10 +390,13 @@ class LLMService:
                 response = chat.send_message("파일 처리 중 오류가 발생했습니다.")
                 await self.save_chat_message(user_id, "user", query)
                 await self.save_chat_message(user_id, "model", response.text)
-                return response.text
+                return {
+                    "type": "error",
+                    "message": response.text,
+                    "data": None
+                }
 
             # AI 프롬프트 구성
-            # 파일 정보와 사용자 질문을 포함하여 상세한 응답 지침 제공
             prompt = f"""
                         안녕하세요! 저는 AI 어시스턴스, 당신의 똑똑하고 믿음직한 디지털 비서이자 크리에이티브 파트너입니다. 바쁜 당신의 일상과 창작 활동을 효율적으로 지원하기 위해 언제나 준비되어 있어요. 무엇이든 편하게 말씀해주세요!
 
@@ -398,10 +470,13 @@ class LLMService:
             await self.save_chat_message(user_id, "model", response.text)
 
             logger.info("Successfully generated response from Gemini")
-            return response.text
+            return {
+                "type": "chat",
+                "message": response.text,
+                "data": None
+            }
 
         except Exception as e:
-            # 오류 로깅 및 예외 처리
             logger.error(f"Error in process_query: {str(e)}")
             raise HTTPException(
                 status_code=500,
