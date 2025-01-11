@@ -391,3 +391,46 @@ class StorageService:
                 status_code=500,
                 detail=f"Failed to create PDF: {str(e)}"
             )
+
+    async def delete_file(self, user_email: str, file_id: str):
+        """
+        특정 파일을 삭제합니다.
+        """
+        try:
+            # 1. 사용자 정보 조회
+            user = await self.users_collection.find_one({"email": user_email})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # 2. 파일 정보 조회
+            file = await self.db["files"].find_one({"_id": ObjectId(file_id)})
+
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # 3. 파일 소유자 확인
+            if file["user_id"] != user["_id"]:
+                raise HTTPException(status_code=403, detail="You do not have permission to delete this file")
+
+            # 4. S3에서 파일 삭제
+            self.s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=file['s3_key'])
+
+            # 5. 연관된 파일 삭제 (primary 파일인 경우)
+            if file.get("is_primary"):
+                related_file = await self.db.files.find_one({"primary_file_id": file["_id"]})
+                if related_file:
+                    self.s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=related_file['s3_key'])
+                    await self.db["files"].delete_one({"_id": related_file["_id"]})
+
+            # 6. 데이터베이스에서 파일 정보 삭제
+            await self.db["files"].delete_one({"_id": ObjectId(file_id)})
+
+            return {"message": "File deleted successfully"}
+
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete file: {str(e)}"
+            )

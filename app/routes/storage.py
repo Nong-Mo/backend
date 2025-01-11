@@ -79,6 +79,27 @@ async def get_file_detail(
             detail=f"Failed to fetch file detail: {str(e)}"
         )
 
+@router.delete("/files/{file_id}")
+async def delete_file(
+    file_id: str,
+    user_email: str = Depends(verify_jwt),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    특정 파일을 삭제합니다.
+    """
+    try:
+        storage_service = await StorageService.create(db)
+        await storage_service.delete_file(user_email, file_id)
+        return {"message": "File deleted successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete file: {str(e)}"
+        )
+
 @router.post("/convert-to-pdf", response_model=PDFConversionResponse)
 async def convert_to_pdf(
     request: PDFConversionRequest,
