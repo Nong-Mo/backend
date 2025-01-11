@@ -4,7 +4,7 @@ from app.services.llm_service import LLMService
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from app.services.image_services import verify_jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -67,3 +67,36 @@ async def start_new_chat(
     """
     result = await llm_service.start_new_chat(user_id)
     return NewChatResponse(**result)
+
+
+class SaveStoryRequest(BaseModel):
+    storage_name: str = Field(..., description="저장할 보관함 이름 (예: '책', '영수증' 등)")
+    title: str = Field(..., description="단편소설 제목")
+
+@router.post("/save-story", response_model=dict)
+async def save_story(
+        request: SaveStoryRequest,
+        user_id: str = Depends(verify_jwt),
+        llm_service: LLMService = Depends(get_llm_service)
+):
+    """
+    마지막 LLM 응답을 단편소설로 저장합니다.
+
+    Args:
+        request: 저장할 단편소설 정보 (보관함 이름, 제목)
+        user_id: JWT에서 추출한 사용자 ID
+        llm_service: LLM 서비스 인스턴스
+
+    Returns:
+        dict: 저장 결과 및 파일 ID
+    """
+    file_id = await llm_service.save_story(
+        user_id,
+        request.storage_name,
+        request.title
+    )
+    return {
+        "status": "success",
+        "message": "단편소설이 저장되었습니다.",
+        "file_id": file_id
+    }
