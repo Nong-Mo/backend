@@ -1,4 +1,6 @@
 from fastapi import APIRouter, UploadFile, Depends, Form, File, HTTPException
+
+from app.routes.llm import get_llm_service
 from app.schemas.image import ImageUploadResponse
 from app.services.image_services import ImageService
 from typing import List
@@ -7,11 +9,18 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from typing import Dict
 
+from app.services.llm_service import LLMService
+
 router = APIRouter()
 
+
 # ImageService 인스턴스를 생성하는 의존성 함수
-async def get_image_service(db: AsyncIOMotorClient = Depends(get_database)):
-    return ImageService(mongodb_client=db)
+async def get_image_service(
+        db: AsyncIOMotorClient = Depends(get_database),
+        llm_service: LLMService = Depends(get_llm_service)
+):
+    return ImageService(mongodb_client=db, llm_service=llm_service)
+
 
 @router.post("/images/upload", response_model=ImageUploadResponse)
 async def upload_images(
@@ -56,13 +65,14 @@ async def upload_images(
             detail=str(e)
         )
 
+
 @router.post("/receipt/ocr", response_model=Dict)
 async def process_receipt_ocr(
-    storage_name: str = Form(...),
-    title: str = Form(...),
-    files: List[UploadFile] = File(...),  # 파일 목록으로 변경
-    user_id: str = Depends(verify_jwt),
-    image_service: ImageService = Depends(get_image_service)
+        storage_name: str = Form(...),
+        title: str = Form(...),
+        files: List[UploadFile] = File(...),  # 파일 목록으로 변경
+        user_id: str = Depends(verify_jwt),
+        image_service: ImageService = Depends(get_image_service)
 ):
     """
    다중 영수증 이미지 OCR 처리

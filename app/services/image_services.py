@@ -28,6 +28,7 @@ import ssl
 import logging
 import asyncio
 from app.services.storage_service import StorageService
+from app.services.llm_service import LLMService
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ class ImageService:
     # 허용된 보관함 이름 목록
     ALLOWED_STORAGE_NAMES = ["책", "영수증", "굿즈", "필름 사진", "서류", "티켓"]
 
-    def __init__(self, mongodb_client: AsyncIOMotorClient):
+    def __init__(self, mongodb_client: AsyncIOMotorClient, llm_service: LLMService):
         self.s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY_ID,
@@ -68,6 +69,7 @@ class ImageService:
         self.db = mongodb_client
         self.storage_collection = self.db.storages
         self.files_collection = self.db.files
+        self.llm_service = llm_service
 
     async def update_storage_count(self, user_id: ObjectId, storage_name: str, file_count: int) -> str:
         """보관함 파일 수 업데이트"""
@@ -167,16 +169,31 @@ class ImageService:
 
             # 모든 텍스트를 하나로 합침
             final_text = " ".join(combined_text)
+            print("final_text", final_text)
+            prompt = f"""
+                다음은 OCR로 추출된 텍스트입니다. 문맥을 파악하여 자연스러운 문장으로 정리해주세요:
+                {final_text}
+
+                규칙:
+                1. 불필요한 공백과 특수문자 제거
+                2. 문장 구조 자연스럽게 정리
+                3. 맥락에 맞게 단락 구분
+                4. 중요 정보(날짜, 금액, 이름 등) 보존
+                5. TTS 음성 변환에 적합하도록 정리
+                """
+
+            refined_text = await self.llm_service.process_query(user_id, prompt)
+            print("refined_text", refined_text)
 
             # 하나의 TTS 파일 생성 및 S3 업로드
-            s3_key = await self._call_naver_tts(final_text, f"combined_{file_id}", storage_name)
+            s3_key = await self._call_naver_tts(refined_text, f"combined_{file_id}", storage_name)
 
             # Files 컬렉션에 메타데이터 저장 부분 수정
             file_info = {
                 "title": title,
                 "filename": f"combined_{file_id}",
                 "s3_key": s3_key,
-                "contents": final_text,
+                "contents": refined_text,
                 "file_size": total_size,
                 "mime_type": "audio/mp3",  # MP3를 primary로
                 "original_files": [f.filename for f in files],
