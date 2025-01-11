@@ -116,6 +116,10 @@ class AuthService:
                 detail="Password must be 8-20 characters long, contain at least two character types (uppercase, lowercase, numbers, special characters), and no spaces."
             )
 
+        # 닉네임 길이 제한 추가
+        if len(user.nickname) > 8:
+            raise HTTPException(status_code=400, detail="Nickname must be 8 characters or less")
+
         existing_user = await self.users_collection.find_one({"email": user.email})
         if existing_user:
             raise HTTPException(status_code=409, detail="Email already registered")
