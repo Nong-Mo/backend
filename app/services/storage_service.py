@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.schemas.storage import StorageInfo, StorageListResponse, StorageDetailResponse, FileDetail, PDFConversionResponse, FileDetailResponse
-from typing import List
+from typing import List, Optional
 from bson import ObjectId
 from botocore.config import Config
 from app.core.config import (
@@ -325,7 +325,8 @@ class StorageService:
         storage_id: str,
         image_paths: List[str], 
         pdf_title: str,
-        primary_file_id: str  # 추가된 파라미터
+        primary_file_id: Optional[str] = None,  # MP3 파일 ID (선택적)
+        storage_type: str = "pdfs"  # 저장할 S3 경로 (기본값: pdfs)
     ) -> dict:
         """
         이미지들을 PDF로 변환하고 저장합니다.
@@ -335,7 +336,8 @@ class StorageService:
             storage_id (str): 보관함 ID
             image_paths (List[str]): 변환할 이미지 파일 경로 목록
             pdf_title (str): PDF 파일 제목
-            primary_file_id (str): 대표 파일(MP3)의 ID
+            primary_file_id (Optional[str]): 대표 파일(MP3)의 ID (선택적)
+            storage_type (str): S3에 저장할 경로 (예: "pdfs", "receipts")
         Returns:
             dict: PDF 파일 메타데이터
         """
@@ -348,7 +350,7 @@ class StorageService:
 
                 # 2. PDF를 S3에 업로드
                 pdf_id = str(uuid.uuid4())
-                s3_key = f"pdfs/{user_id}/{pdf_id}.pdf"
+                s3_key = f"{storage_type}/{user_id}/{pdf_id}.pdf"
                 
                 with open(pdf_path, "rb") as f:
                     self.s3_client.upload_fileobj(
@@ -363,15 +365,20 @@ class StorageService:
                 pdf_doc = {
                     "storage_id": ObjectId(storage_id),
                     "user_id": user_id,
-                    "title": pdf_title,  # "(PDF)" 제거
+                    "title": pdf_title,
                     "s3_key": s3_key,
                     "created_at": now,
                     "updated_at": now,
                     "mime_type": "application/pdf",
-                    "file_size": os.path.getsize(pdf_path),
-                    "primary_file_id": ObjectId(primary_file_id),  # MP3 파일과 연결
-                    "is_primary": False  # 연관 파일 표시
+                    "file_size": os.path.getsize(pdf_path)
                 }
+                
+                # MP3 파일이 있는 경우에만 연결 정보 추가
+                if primary_file_id:
+                    pdf_doc.update({
+                        "primary_file_id": ObjectId(primary_file_id),
+                        "is_primary": False
+                    })
                 
                 result = await self.db.files.insert_one(pdf_doc)
                 return {

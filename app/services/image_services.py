@@ -496,7 +496,8 @@ class ImageService:
             storage_name: str,
             title: str,
             files: List[UploadFile],
-            user_id: str
+            user_id: str,
+            vertices_data: Optional[List[Optional[List[Dict[str, float]]]]] = None
     ):
         storage_id = None
         group_id = str(uuid.uuid4())  # 파일 그룹 ID
@@ -512,32 +513,65 @@ class ImageService:
                 file_count=1
             )
 
+            file_id = str(uuid.uuid4())
+            upload_dir = f"/tmp/{user_id}/{file_id}"
+            os.makedirs(upload_dir, exist_ok=True)
             combined_contents = []
-            s3_keys = []
+            image_paths = []
 
             for idx, file in enumerate(files):
-                ocr_result = await self.call_clova_receipt_ocr(file)
-                combined_contents.append(ocr_result)
+                try:
+                    content = await file.read()
+                    logger.debug(f"Processing file {idx}: {file.filename}")
+                    if not content:
+                        raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
+                    
+                    # 정점 정보가 있는 경우 이미지 변환
+                    transformed_content = content  # 기본값은 원본 이미지
+                    if vertices_data and len(vertices_data) > idx and vertices_data[idx] is not None:
+                        logger.info(f"Transforming image {idx} with vertices: {vertices_data[idx]}")
+                        transformed_content = await self.transform_image(content, vertices_data[idx])
+                        logger.info(f"Image {idx} transformation completed")
+                    else:
+                        logger.info(f"Skipping transformation for image {idx} - no vertices data")
 
-                file.file.seek(0)
-                contents = await file.read()
-                s3_key = f"receipts/{user_id}/{group_id}/receipt_{idx + 1}.{file.filename.split('.')[-1]}"
-                s3_keys.append(s3_key)
+                    # 임시 파일 저장 (변환된 이미지 또는 원본)
+                    file_path = os.path.join(upload_dir, file.filename)
+                    with open(file_path, "wb") as f:
+                        f.write(transformed_content)
 
-                self.s3_client.put_object(
-                    Bucket=S3_BUCKET_NAME,
-                    Key=s3_key,
-                    Body=contents,
-                    ContentType=file.content_type
-                )
+                    image_paths.append(file_path)
+
+                    # OCR 처리를 위한 새로운 UploadFile 객체 생성
+                    transformed_file = UploadFile(
+                        filename=file.filename,
+                        file=BytesIO(transformed_content),
+                        headers={"content-type": "image/jpeg"}
+                    )
+
+                    ocr_result = await self.call_clova_receipt_ocr(transformed_file)
+                    combined_contents.append(ocr_result)
+                    await transformed_file.close()
+
+                except (IOError, ValueError) as e:
+                    raise HTTPException(status_code=400, detail=f"Failed to process file: {e}")
+
+            # PDF 생성
+            storage_service = StorageService(self.db)
+            pdf_result = await storage_service.create_pdf_from_images(
+                user_id=user["_id"],
+                storage_id=storage_id,
+                image_paths=image_paths,
+                pdf_title=title,
+                storage_type="receipts"  # receipts 폴더에 저장
+            )
 
             file_info = {
                 "title": title,
                 "filename": f"combined_{group_id}",
-                "s3_key": s3_keys[0],
-                "additional_s3_keys": s3_keys[1:],
+                "s3_key": pdf_result["s3_key"],  # PDF의 S3 키 사용
                 "contents": combined_contents,
-                "file_size": sum(f.size for f in files),  # file.read() 대신 size 속성 사용
+                "file_size": sum(f.size for f in files),
                 "mime_type": "application/json",
                 "is_primary": True
             }
