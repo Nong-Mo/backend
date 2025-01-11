@@ -14,6 +14,12 @@ class LLMResponse(BaseModel):
     response: str
 
 
+class NewChatResponse(BaseModel):
+    status: str
+    message: str
+    deleted_messages: int
+
+
 # Request 모델 정의
 class LLMQuery(BaseModel):
     query: str
@@ -42,3 +48,22 @@ async def process_llm_query(
     """
     response = await llm_service.process_query(user_id, query_data.query)
     return LLMResponse(response=response)
+
+
+@router.post("/new-chat", response_model=NewChatResponse)
+async def start_new_chat(
+    user_id: str = Depends(verify_jwt),
+    llm_service: LLMService = Depends(get_llm_service)
+):
+    """
+    새로운 채팅 세션을 시작하고 이전 채팅 기록을 삭제합니다.
+
+    Args:
+        user_id: JWT에서 추출한 사용자 ID
+        llm_service: LLM 서비스 인스턴스
+
+    Returns:
+        NewChatResponse: 새 채팅 시작 결과
+    """
+    result = await llm_service.start_new_chat(user_id)
+    return NewChatResponse(**result)
