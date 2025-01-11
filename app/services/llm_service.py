@@ -3,12 +3,15 @@ LLM (Large Language Model) 서비스 클래스
 이 클래스는 Google의 Gemini API를 사용하여 대화형 AI 서비스를 제공합니다.
 MongoDB를 사용하여 사용자 정보, 파일, 채팅 기록을 관리합니다.
 """
+import asyncio
+import uuid
 
+import boto3
 import google.generativeai as genai
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 import json
-from app.core.config import GOOGLE_API_KEY
+from app.core.config import GOOGLE_API_KEY, S3_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_ACCESS_KEY_ID, S3_BUCKET_NAME
 import logging
 import datetime
 from typing import Dict
@@ -30,10 +33,18 @@ class LLMService:
             - 사용자별 채팅 세션 저장소
             - Gemini API 설정
         """
+        # S3 클라이언트 초기화 추가
+        self.s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=S3_REGION_NAME
+        )
         self.db = mongodb_client
         self.files_collection = self.db.files  # 파일 정보 저장 컬렉션
         self.users_collection = self.db.users  # 사용자 정보 저장 컬렉션
         self.chat_collection = self.db.chat_history  # 채팅 기록 저장 컬렉션
+        self.storage_collection = self.db.storages  # 추가
 
         # 사용자별 채팅 세션을 메모리에 저장하는 딕셔너리
         # Key: 사용자 ID, Value: Gemini 채팅 세션 객체
@@ -166,6 +177,86 @@ class LLMService:
             raise HTTPException(
                 status_code=500,
                 detail=f"새 채팅 시작 중 오류가 발생했습니다: {str(e)}"
+            )
+
+    async def save_story(
+            self,
+            user_email: str,  # 파라미터명을 명확하게 변경
+            storage_name: str,
+            title: str
+    ):
+        try:
+            # 사용자 ObjectId 조회
+            user = await self.users_collection.find_one({"email": user_email})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            user_id = user["_id"]  # MongoDB용 ObjectId
+
+            # storage 조회
+            storage = await self.storage_collection.find_one({
+                "user_id": user_id,  # ObjectId 사용
+                "name": storage_name
+            })
+
+            if not storage:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Storage '{storage_name}' not found for this user"
+                )
+
+            # 채팅 기록은 이메일로 조회
+            last_message = await self.chat_collection.find_one(
+                {"user_id": user_email},  # 채팅 기록은 이메일로 저장됨
+                sort=[("timestamp", -1)]
+            )
+
+            if not last_message:
+                raise HTTPException(
+                    status_code=404,
+                    detail="저장할 단편소설을 찾을 수 없습니다."
+                )
+
+            content = last_message["content"]
+            file_id = str(uuid.uuid4())
+            filename = f"{title}.txt"
+            s3_key = f"stories/{user_email}/{file_id}/{filename}"  # S3는 이메일 사용
+
+            # S3 업로드
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=content.encode('utf-8'),
+                    ContentType='text/plain'
+                ),
+                *()
+            )
+
+            # MongoDB에는 ObjectId로 저장
+            file_doc = {
+                "storage_id": storage["_id"],
+                "user_id": user_id,  # ObjectId 사용
+                "title": title,
+                "filename": filename,
+                "s3_key": s3_key,
+                "contents": content,
+                "file_size": len(content.encode('utf-8')),
+                "mime_type": "text/plain",
+                "created_at": datetime.datetime.now(),
+                "updated_at": datetime.datetime.now(),
+                "is_primary": True
+            }
+
+            result = await self.files_collection.insert_one(file_doc)
+            return str(result.inserted_id)
+
+        except Exception as e:
+            logger.error(f"Error saving story for user {user_email}: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"단편소설 저장 중 오류가 발생했습니다: {str(e)}"
             )
 
     async def process_query(self, user_id: str, query: str, new_chat: bool = False):
