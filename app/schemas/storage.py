@@ -14,7 +14,8 @@ class FileDetail(BaseModel):
     fileID: str # 파일 ID
     fileName: str # 파일 이름
     uploadDate: datetime # 업로드 날짜
-
+    recentDate: datetime # 최근 수정 날짜
+    
 class StorageDetailResponse(BaseModel):
     storageName: str # 보관함 이름
     fileList: List[FileDetail] # FileDetail 객체들의 리스트
