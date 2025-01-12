@@ -106,6 +106,6 @@ async def save_story(
    )
    return {
        "status": "success",
-       "message": "단편소설이 저장되었습니다.",
+       "message": "결과가 저장되었습니다.",
        "file_id": file_id
    }
