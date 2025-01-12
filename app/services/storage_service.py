@@ -85,7 +85,8 @@ class StorageService:
                 file_list.append(FileDetail(
                     fileID=str(file["_id"]),
                     fileName=file["title"],
-                    uploadDate=file["created_at"]
+                    uploadDate=file["created_at"],
+                    recentDate=file["recented_at"]
                 ))
 
             return StorageDetailResponse(
