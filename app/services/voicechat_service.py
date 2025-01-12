@@ -97,8 +97,8 @@ class VoiceChatService:
             # 4. Gemini로 대화 처리
             response = await self._process_gemini_chat(text, history)
             
-            # 5. TTS 변환 (비동기)
-            audio_response = await self._synthesize_speech(response)
+            # 5. TTS 변환 및 S3 저장 (비동기)
+            s3_url = await self._synthesize_and_upload_speech(response)
             
             # 6. 대화 내용 저장 (비동기)
             save_task = asyncio.create_task(self._save_chat_messages(
@@ -112,7 +112,7 @@ class VoiceChatService:
             
             return {
                 "message": response,
-                "audio_content": audio_response,
+                "audio_url": s3_url,
                 "session_id": session_id
             }
 
@@ -243,15 +243,15 @@ class VoiceChatService:
             logger.error(f"Error in Gemini chat: {str(e)}")
             raise
 
-    async def _synthesize_speech(self, text: str) -> bytes:
+    async def _synthesize_and_upload_speech(self, text: str) -> str:
         """
-        Amazon Polly로 텍스트를 음성으로 변환합니다.
+        텍스트를 음성으로 변환하고 S3에 업로드합니다.
 
         Args:
-            text (str): 변환할 텍스트.
+            text (str): 변환할 텍스트
 
         Returns:
-            bytes: 변환된 음성 데이터.
+            str: S3에 업로드된 파일의 URL
         """
         try:
             # 텍스트를 3000자 이하로 분할
@@ -273,10 +273,27 @@ class VoiceChatService:
 
             # 모든 음성 스트림을 결합
             combined_audio = b''.join(audio_streams)
-            return combined_audio
+
+            # S3에 업로드
+            file_id = str(uuid.uuid4())
+            s3_key = f"voicechat/responses/{file_id}.mp3"
+            
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=combined_audio,
+                    ContentType='audio/mpeg'
+                )
+            )
+
+            # S3 URL 생성
+            url = f"https://{S3_BUCKET_NAME}.s3.{S3_REGION_NAME}.amazonaws.com/{s3_key}"
+            return url
 
         except Exception as e:
-            logger.error(f"Error in speech synthesis: {str(e)}")
+            logger.error(f"Error in speech synthesis and upload: {str(e)}")
             raise
 
     async def _create_chat_session(self, user_id: str, session_id: str):
@@ -299,7 +316,7 @@ class VoiceChatService:
     async def _load_chat_history(self, session_id: str) -> List[Dict]:
         """
         세션의 대화 기록을 로드합니다.
-
+gi
         Args:
             session_id (str): 대화 세션 ID.
 
