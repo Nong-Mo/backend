@@ -84,6 +84,10 @@ class PDFUtil:
                         "primary_file_id": ObjectId(primary_file_id),
                         "is_primary": False
                     })
+                else:
+                    pdf_doc.update({
+                        "is_primary": True
+                    })
 
                 result = await self.db.files.insert_one(pdf_doc)
                 return {

@@ -66,7 +66,8 @@ class ImageService:
             "mime_type": file_info["mime_type"],
             "created_at": now,
             "updated_at": now,
-            "is_primary": file_info.get("is_primary", False)
+            "is_primary": file_info.get("is_primary", False),
+            "primary_file_id": file_info.get("primary_file_id", None)
         }
 
         result = await self.files_collection.insert_one(file_doc)
@@ -315,7 +316,8 @@ class ImageService:
                 "contents": combined_contents,
                 "file_size": total_size,
                 "mime_type": "application/json",
-                "is_primary": True
+                "is_primary": False,
+                "primary_file_id": pdf_result["file_id"]
             }
 
             file_id = await self.save_file_metadata(
