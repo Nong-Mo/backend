@@ -85,7 +85,6 @@ class QueryProcessor:
 
     async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True) -> \
     Dict[str, Any]:
-        """사용자 질의를 처리합니다."""
         try:
             chat_history = await self.get_chat_history(user_id)
 
@@ -96,73 +95,46 @@ class QueryProcessor:
 
             chat = self.chat_sessions[user_id]
 
-            # 검색 의도 파악
-            search_prompt = f"""
-            사용자의 질문이 파일 검색 요청인지 파악해주세요.
-            질문: {query}
-
-            규칙:
-            1. "~~ 파일 찾아줘", "~~ 문서 어디있어?" 등의 패턴 인식
-            2. 검색할 파일명만 추출
-            3. 검색 의도가 있으면 "SEARCH:파일명" 형식으로 반환
-            4. 검색 의도가 없으면 "CHAT" 반환
-            """
-
-            intention = chat.send_message(search_prompt)
-
-            if intention.text.startswith("SEARCH:"):
-                search_query = intention.text.split("SEARCH:")[1].strip()
-                result = await self.search_file(user_id, search_query)
-                if save_to_history:
-                    await self.save_chat_message(user_id, "user", query)
-                    await self.save_chat_message(user_id, "model", result["message"])
-                return result
-
-            # 일반 대화 처리
+            # 파일 목록 가져오기
             files = await self.get_user_files(user_id)
-
-            if not files:
-                response = chat.send_message("파일을 찾을 수 없습니다.")
-                if save_to_history:
-                    await self.save_chat_message(user_id, "user", query)
-                    await self.save_chat_message(user_id, "model", response.text)
-                return {
-                    "type": "chat",
-                    "message": response.text,
-                    "data": None
-                }
-
-            # LLM 처리 시 원본 contents는 변경하지 않도록 수정
-            context = [
-                {
-                    "title": file.get("title", "제목 없음"),
-                    "created_at": file["created_at"].isoformat(),
-                    "type": file.get("mime_type", "unknown"),
-                    "content": file.get("contents", "")  # 원본 내용 그대로 유지
-                }
-                for file in files
-            ]
 
             prompt = f"""
             [시스템 메시지]
-            당신은 사용자의 파일을 관리하고 분석하는 AI 어시스턴트입니다.
+            당신은 사용자의 파일을 관리하고 분석하는 AI 어시스턴트입니다. 
 
-            [사용자 파일 정보]
-            {json.dumps(context, ensure_ascii=False, indent=2)}
+            [컨텍스트]
+            - 사용자가 보유한 파일 수: {len(files)}개
+            - 사용자의 파일 제목 목록: {', '.join(f['title'] for f in files)}
 
             [사용자 질문]
             {query}
+
+            [응답 규칙]
+            1. 사용자가 특정 파일을 찾고 있다면, 해당 파일을 찾아서 알려주세요.
+            2. 일반적인 질문이라면, 파일 내용을 참조하여 자연스럽게 답변해주세요.
+            3. 모든 답변은 한국어로, 친절하고 자연스럽게 해주세요.
             """
 
             response = chat.send_message(prompt)
+            response_text = response.text.strip()
+
+            # 검색 키워드가 있는지 확인
+            for file in files:
+                if file['title'].lower() in query.lower():
+                    result = await self.search_file(user_id, file['title'])
+                    if result['type'] == 'file_found':
+                        if save_to_history:
+                            await self.save_chat_message(user_id, "user", query)
+                            await self.save_chat_message(user_id, "model", response_text)
+                        return result
 
             if save_to_history:
                 await self.save_chat_message(user_id, "user", query)
-                await self.save_chat_message(user_id, "model", response.text)
+                await self.save_chat_message(user_id, "model", response_text)
 
             return {
                 "type": "chat",
-                "message": response.text,  # LLM 응답은 message에만 저장
+                "message": response_text,
                 "data": None
             }
 
