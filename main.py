@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routes import auth, image, storage, llm
+from app.routes import auth, image, storage, llm, voicechat
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="AtoD")
@@ -33,3 +33,6 @@ app.include_router(storage.router, prefix="/storage", tags=["storage"])
 
 # llm 관련 라우트 등록
 app.include_router(llm.router, prefix="/llm", tags=["llm"])
+
+# 음성 채팅 관련 라우트 등록
+app.include_router(voicechat.router, prefix="/api") 
