@@ -173,7 +173,7 @@ class ImageService:
             refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
 
             s3_key = await self.tts_util.convert_text_to_speech(
-                refined_text["message"],
+                final_text,
                 f"combined_{file_id}",
                 storage_name
             )
