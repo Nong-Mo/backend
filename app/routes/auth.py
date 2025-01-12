@@ -3,6 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.models.user import UserCreate, UserLogin
 from app.services.auth_service import AuthService
 from app.core.database import get_database
+from app.utils.auth_util import verify_jwt
 from typing import Dict, Any
 
 router = APIRouter()
@@ -85,4 +86,56 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"로그인 처리 중 오류가 발생했습니다: {str(e)}"
+        )
+    
+@router.get(
+    "/verify",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    description="JWT 토큰의 유효성을 검증합니다."
+)
+async def verify_token(
+    user_id: str = Depends(verify_jwt),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+) -> Dict[str, Any]:
+    """
+    JWT 토큰의 유효성을 검증하는 엔드포인트
+    
+    Args:
+        user_id: JWT 토큰에서 추출한 사용자 ID (이메일)
+        db: AsyncIOMotorDatabase - MongoDB 데이터베이스 인스턴스
+
+    Returns:
+        Dict[str, Any]: 검증 결과와 사용자 정보
+
+    Raises:
+        HTTPException: 
+            - 401: 토큰이 유효하지 않은 경우
+            - 404: 사용자를 찾을 수 없는 경우
+    """
+    try:
+        # 사용자 존재 여부 확인
+        user = await db["users"].find_one({"email": user_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # 토큰이 유효하고 사용자도 존재하는 경우
+        return {
+            "status": "success",
+            "message": "Token is valid",
+            "data": {
+                "email": user["email"],
+                "nickname": user["nickname"]
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Token verification failed: {str(e)}"
         )
