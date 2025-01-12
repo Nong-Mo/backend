@@ -1,4 +1,3 @@
-from datetime import timedelta
 import os
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,15 +12,8 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 
 # JWT 관련 설정 값
 SECRET_KEY = os.getenv("SECRET_KEY")
-if not SECRET_KEY or len(SECRET_KEY) < 32:
-    raise ValueError("SECRET_KEY must be at least 32 characters long")
-
-ALGORITHM = "HS256" 
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-
-# JWT 관련 추가 설정
-JWT_MIN_LENGTH = 32
-JWT_MAX_AGE = timedelta(days=7)
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
 # Naver CLOVA OCR API 설정
 NAVER_CLOVA_OCR_SECRET = os.getenv("NAVER_CLOVA_OCR_SECRET")
