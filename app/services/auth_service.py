@@ -158,69 +158,6 @@ class AuthService:
                 await self.storages_collection.delete_many({"user_id": user_id})
             raise HTTPException(status_code=500, detail=str(e))
 
-    def create_access_token(self, data: dict, expires_delta: timedelta = None):
-        """Access 토큰 생성"""
-        to_encode = data.copy()
-        if expires_delta:
-            expire = datetime.now(timezone.utc) + expires_delta
-        else:
-            expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-        to_encode.update({"exp": expire})
-        return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-    def create_refresh_token(self, data: dict):
-        """Refresh 토큰 생성"""
-        to_encode = data.copy()
-        expire = datetime.now(timezone.utc) + timedelta(days=7)
-        to_encode.update({"exp": expire})
-        return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-    async def verify_token(self, token: str):
-        """JWT 토큰을 검증하는 메서드"""
-        try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            email: str = payload.get("sub")
-            if email is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid authentication credentials"
-                )
-            
-            user = await self.users_collection.find_one({"email": email})
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found"
-                )
-                
-            return user
-            
-        except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials"
-            )
-
-    async def refresh_access_token(self, refresh_token: str):
-        """리프레시 토큰으로 새로운 액세스 토큰 발급"""
-        try:
-            payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
-            email: str = payload.get("sub")
-            if email is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid refresh token"
-                )
-
-            access_token = self.create_access_token({"sub": email})
-            return {"access_token": access_token}
-
-        except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
-
     async def login_user(self, user: UserLogin):
         """사용자 로그인을 처리합니다."""
         existing_user = await self.users_collection.find_one({"email": user.email})
@@ -230,12 +167,9 @@ class AuthService:
         if not await self.verify_password(user.password, existing_user["password"]):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        # Access Token과 Refresh Token 모두 발급
-        access_token = self.create_access_token({"sub": user.email})
-        refresh_token = self.create_refresh_token({"sub": user.email})
-        
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer"
-        }
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = self.create_access_token(
+            data={"sub": user.email},
+            expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
