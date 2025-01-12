@@ -3,7 +3,7 @@ import json
 import logging
 import datetime
 from fastapi import HTTPException
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List
 from app.models.llm import FileSearchResult
 import google.generativeai as genai
 from app.core.config import GOOGLE_API_KEY
@@ -20,25 +20,45 @@ class QueryProcessor:
         self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
         self.chat_sessions = {}
 
-    async def save_chat_message(self, user_id: str, role: str, content: str):
-        """채팅 메시지를 저장합니다."""
-        await self.chat_collection.insert_one({
+    async def save_chat_message(self, user_id: str, role: str, content: str | dict):
+        """
+        채팅 메시지를 저장합니다. OCR 결과의 경우 구조화된 형태로 저장합니다.
+        """
+        message_doc = {
             "user_id": user_id,
             "role": role,
             "content": content,
             "timestamp": datetime.datetime.now()
-        })
+        }
 
-    async def get_chat_history(self, user_id: str, limit: int = 20):
-        """채팅 기록을 조회합니다."""
+        # OCR 결과인 경우 메시지 타입 지정
+        if isinstance(content, dict) and "type" not in message_doc:
+            message_doc["type"] = "ocr_result"
+
+        await self.chat_collection.insert_one(message_doc)
+
+    async def get_chat_history(self, user_id: str, limit: int = 20) -> List[Dict]:
+        """채팅 기록을 조회하고 OCR 결과를 포함하여 반환합니다."""
         history = await self.chat_collection.find(
             {"user_id": user_id}
         ).sort("timestamp", -1).limit(limit).to_list(length=None)
 
-        return [
-            {"role": msg["role"], "parts": msg["content"]}
-            for msg in reversed(history)
-        ]
+        # OCR 결과는 별도로 처리
+        formatted_history = []
+        for msg in reversed(history):
+            if msg.get("type") == "ocr_result":
+                formatted_history.append({
+                    "role": msg["role"],
+                    "parts": json.dumps(msg["content"], ensure_ascii=False),
+                    "type": "ocr_result"
+                })
+            else:
+                formatted_history.append({
+                    "role": msg["role"],
+                    "parts": msg["content"]
+                })
+
+        return formatted_history
 
     async def search_file(self, user_id: str, query: str) -> FileSearchResult:
         """파일을 검색합니다."""
@@ -83,10 +103,16 @@ class QueryProcessor:
 
     # app/utils/query_util.py
 
-    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True) -> \
-    Dict[str, Any]:
+    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True) -> Dict[str, Any]:
         try:
             chat_history = await self.get_chat_history(user_id)
+
+            # OCR 결과가 있는지 확인
+            ocr_data = None
+            for msg in reversed(chat_history):
+                if isinstance(msg.get("content"), dict) and msg.get("type") == "ocr_result":
+                    ocr_data = msg["content"]
+                    break
 
             if new_chat or user_id not in self.chat_sessions:
                 self.chat_sessions[user_id] = self.model.start_chat(
@@ -98,6 +124,11 @@ class QueryProcessor:
             # 파일 목록 가져오기
             files = await self.get_user_files(user_id)
 
+            # OCR 데이터가 있는 경우 프롬프트에 포함
+            ocr_context = ""
+            if ocr_data:
+                ocr_context = f"\n\nOCR 분석 결과:\n{json.dumps(ocr_data, ensure_ascii=False, indent=2)}"
+
             prompt = f"""
             [시스템 메시지]
             당신은 사용자의 파일을 관리하고 분석하는 AI 어시스턴트입니다. 
@@ -105,28 +136,20 @@ class QueryProcessor:
             [컨텍스트]
             - 사용자가 보유한 파일 수: {len(files)}개
             - 사용자의 파일 제목 목록: {', '.join(f['title'] for f in files)}
+            {ocr_context}
 
             [사용자 질문]
             {query}
 
             [응답 규칙]
             1. 사용자가 특정 파일을 찾고 있다면, 해당 파일을 찾아서 알려주세요.
-            2. 일반적인 질문이라면, 파일 내용을 참조하여 자연스럽게 답변해주세요.
-            3. 모든 답변은 한국어로, 친절하고 자연스럽게 해주세요.
+            2. OCR 결과가 있다면, 구체적인 금액과 정보를 포함하여 분석해주세요.
+            3. 일반적인 질문이라면, 파일 내용을 참조하여 자연스럽게 답변해주세요.
+            4. 모든 답변은 한국어로, 친절하고 자연스럽게 해주세요.
             """
 
             response = chat.send_message(prompt)
             response_text = response.text.strip()
-
-            # 검색 키워드가 있는지 확인
-            for file in files:
-                if file['title'].lower() in query.lower():
-                    result = await self.search_file(user_id, file['title'])
-                    if result['type'] == 'file_found':
-                        if save_to_history:
-                            await self.save_chat_message(user_id, "user", query)
-                            await self.save_chat_message(user_id, "model", response_text)
-                        return result
 
             if save_to_history:
                 await self.save_chat_message(user_id, "user", query)
