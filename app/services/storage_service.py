@@ -15,7 +15,7 @@ from app.core.config import (
     S3_REGION_NAME,
     S3_BUCKET_NAME
 )
-import boto3
+import boto3, datetime
 
 class StorageService:
     def __init__(self, db):
@@ -214,4 +214,34 @@ class StorageService:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to delete file: {str(e)}"
+            )
+            
+    async def update_recent_date(self, user_email: str, file_id: str):
+        """파일의 최근 열람일을 갱신합니다."""
+        try:
+            user = await self.users_collection.find_one({"email": user_email})
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            file = await self.db["files"].find_one({"_id": ObjectId(file_id)})
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            if file["user_id"] != user["_id"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have permission to update this file"
+                )
+
+            await self.db["files"].update_one(
+                {"_id": ObjectId(file_id)},
+                {"$set": {"recented_at": datetime.datetime.now()}}
+            )
+
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update recent date: {str(e)}"
             )
