@@ -3,7 +3,7 @@ from app.routes.llm import get_llm_service
 from app.schemas.image import ImageUploadResponse, Point, PageVertices
 from app.services.image_services import ImageService
 from typing import List, Optional
-from app.services.image_services import verify_jwt
+from app.utils.auth_util import verify_jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from typing import Dict

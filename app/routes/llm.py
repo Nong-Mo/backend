@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Body
 from app.services.llm_service import LLMService
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
-from app.services.image_services import verify_jwt
+from app.utils.auth_util import verify_jwt
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
@@ -32,6 +32,7 @@ async def get_llm_service(db: AsyncIOMotorClient = Depends(get_database)):
    return LLMService(mongodb_client=db)
 
 
+# app/routes/llm.py
 @router.post("/query", response_model=LLMResponse)
 async def process_llm_query(
        query_data: LLMQuery = Body(...),
@@ -49,8 +50,13 @@ async def process_llm_query(
    Returns:
        LLMResponse: LLM의 응답 (type, message, data 포함)
    """
-   response = await llm_service.process_query(user_id, query_data.query)
-   return response  # FileSearchResult 형식으로 반환된 응답을 그대로 사용
+   # 일반 채팅과 파일 검색은 채팅 히스토리 저장
+   response = await llm_service.process_query(
+       user_id=user_id,
+       query=query_data.query,
+       save_to_history=True
+   )
+   return response
 
 
 @router.post("/new-chat", response_model=NewChatResponse)
