@@ -11,6 +11,7 @@ from app.core.config import (
     NAVER_CLOVA_RECEIPT_OCR_SECRET,
     NAVER_CLOVA_RECEIPT_OCR_API_URL
 )
+from app.core.exceptions import OCRProcessingError, DataParsingError
 
 # 파일 크기 제한
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -71,15 +72,7 @@ async def process_ocr(file: UploadFile) -> list:
         raise HTTPException(status_code=500, detail=f"OCR 처리 오류: {str(e)}")
 
 async def process_receipt_ocr(file: UploadFile) -> dict:
-    """
-    영수증 OCR 처리를 수행합니다.
-
-    Args:
-        file (UploadFile): OCR 처리할 영수증 이미지 파일
-
-    Returns:
-        dict: OCR 처리 결과
-    """
+    """영수증 OCR 처리를 수행합니다."""
     try:
         file.file.seek(0)
         contents = await file.read()
@@ -93,16 +86,24 @@ async def process_receipt_ocr(file: UploadFile) -> dict:
             }]
         })
 
-        response = requests.post(
-            NAVER_CLOVA_RECEIPT_OCR_API_URL,
-            headers={'X-OCR-SECRET': NAVER_CLOVA_RECEIPT_OCR_SECRET},
-            data={'message': encoded_message},
-            files={'file': (file.filename, contents, file.content_type)}
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = requests.post(
+                NAVER_CLOVA_RECEIPT_OCR_API_URL,
+                headers={'X-OCR-SECRET': NAVER_CLOVA_RECEIPT_OCR_SECRET},
+                data={'message': encoded_message},
+                files={'file': (file.filename, contents, file.content_type)}
+            )
+            response.raise_for_status()
+            return response.json()
 
-    except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"HTTP 오류: {e.response.text}")
+        except requests.exceptions.HTTPError as e:
+            raise OCRProcessingError(f"API 호출 실패: {e.response.text}")
+        except json.JSONDecodeError as e:
+            raise DataParsingError(f"OCR 결과 파싱 실패: {str(e)}")
+        except Exception as e:
+            raise OCRProcessingError(f"알 수 없는 OCR 오류: {str(e)}")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"영수증 OCR 처리 오류: {str(e)}")
+        if isinstance(e, (OCRProcessingError, DataParsingError)):
+            raise e
+        raise OCRProcessingError(f"OCR 처리 중 오류 발생: {str(e)}")
