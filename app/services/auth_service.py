@@ -64,11 +64,23 @@ class AuthService:
     def create_access_token(self, data: dict, expires_delta: timedelta = None):
         """JWT 토큰 생성"""
         to_encode = data.copy()
+        
+        # 현재 시간을 UTC로 설정
+        current_time = datetime.now(timezone.utc)
+        
+        # 필수 클레임 추가
+        to_encode.update({
+            "iat": current_time,  # 토큰 발급 시간
+            "type": "access_token"  # 토큰 타입 명시
+        })
+        
+        # 만료 시간 설정
         if expires_delta:
-            expire = datetime.now(timezone.utc) + expires_delta
+            expire = current_time + expires_delta
         else:
-            expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+            expire = current_time + timedelta(minutes=15)
         to_encode.update({"exp": expire})
+        
         return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
     async def create_default_storages(self, user_id: ObjectId):
