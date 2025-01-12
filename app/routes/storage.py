@@ -3,7 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.database import get_database
 from app.services.storage_service import StorageService
 from app.schemas.storage import StorageListResponse, StorageDetailResponse, PDFConversionRequest, PDFConversionResponse, FileDetailResponse
-from app.services.image_services import verify_jwt
+from app.utils.auth_util import verify_jwt
 from typing import List
 
 router = APIRouter()

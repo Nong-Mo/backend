@@ -44,6 +44,6 @@ class FileDetailResponse(BaseModel):
     fileName: str
     uploadDate: datetime
     fileUrl: str  # S3에서 가져온 파일 URL
-    contents: str | None = None  # 텍스트 내용 (OCR 결과가 있는 경우)
+    contents: dict | None = None  # 텍스트 내용 (OCR 결과가 있는 경우)
     fileType: str  # "audio", "pdf", "image" 등
     relatedFile: Optional[RelatedFileInfo]
