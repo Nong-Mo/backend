@@ -5,6 +5,7 @@ from fastapi import HTTPException
 import datetime
 
 from app.core.exceptions import DataParsingError
+from app.models.message_types import MessageType
 from app.utils.query_util import QueryProcessor
 from app.utils.tts_util import TTSUtil
 from app.utils.pdf_util import PDFUtil
@@ -87,27 +88,40 @@ class LLMService:
             if not storage:
                 raise HTTPException(status_code=404, detail="Storage '책' not found")
 
-            # 마지막 LLM 응답 찾기
-            last_llm_message = await self.chat_collection.find_one(
-                {"user_id": user_email, "role": "model"},
+            # 최근 대화 내용 찾기
+            last_message = await self.chat_collection.find_one(
+                {
+                    "user_id": user_email,
+                    "role": "model",
+                    "$or": [
+                        {"message_type": MessageType.BOOK_STORY.value},
+                        {"message_type": MessageType.GENERAL.value}
+                    ]
+                },
                 sort=[("timestamp", -1)]
             )
 
-            if not last_llm_message:
-                raise HTTPException(status_code=404, detail="No story content found")
+            if not last_message:
+                logger.error(f"No message found for user: {user_email}")
+                raise HTTPException(
+                    status_code=404,
+                    detail="대화 내용을 찾을 수 없습니다. 새로운 대화를 시작해주세요."
+                )
 
-            story_content = last_llm_message.get("content", "")
-            if not story_content:
-                raise HTTPException(status_code=400, detail="Invalid story content")
+            story_content = last_message.get("content")
+            if not story_content or not isinstance(story_content, str):
+                logger.error(f"Invalid content type in message: {type(story_content)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="대화 내용이 유효하지 않습니다. 다시 시도해주세요."
+                )
 
-            # UUID 문자열로 생성
+            # UUID 생성
             file_id = str(uuid.uuid4())
-
-            # 현재 시간 설정
             now = datetime.datetime.now(datetime.UTC)
 
             try:
-                # 1. Storage count 증가 (MP3와 PDF 2개 파일)
+                # Storage count 증가
                 await self.storage_collection.update_one(
                     {"_id": storage["_id"]},
                     {
@@ -116,14 +130,14 @@ class LLMService:
                     }
                 )
 
-                # 2. TTS로 MP3 생성
+                # TTS로 MP3 생성
                 audio_s3_key = await self.tts_util.convert_text_to_speech(
                     story_content,
                     f"story_{file_id}",
                     title
                 )
 
-                # 3. PDF 생성
+                # PDF 생성
                 pdf_result = await self.pdf_util.create_text_pdf(
                     user_id=user["_id"],
                     storage_id=storage["_id"],
@@ -131,7 +145,7 @@ class LLMService:
                     title=title
                 )
 
-                # 4. MP3 파일 메타데이터 저장
+                # MP3 파일 메타데이터 저장
                 mp3_doc = {
                     "storage_id": storage["_id"],
                     "user_id": user["_id"],
@@ -148,7 +162,7 @@ class LLMService:
 
                 mp3_result = await self.files_collection.insert_one(mp3_doc)
 
-                # 5. PDF 파일을 MP3와 연결하여 저장
+                # PDF 파일 메타데이터 저장
                 pdf_doc = {
                     "storage_id": storage["_id"],
                     "user_id": user["_id"],
@@ -165,7 +179,6 @@ class LLMService:
                 }
 
                 await self.files_collection.insert_one(pdf_doc)
-
                 return str(mp3_result.inserted_id)
 
             except Exception as e:
@@ -243,7 +256,7 @@ class LLMService:
             raise DataParsingError(f"영수증 데이터 파싱에 실패했습니다: {str(e)}")
 
     async def _save_receipt_analysis(self, user_email: str, title: str):
-        """영수증 보관함용 저장 로직: 분석 결과와 시각화된 PDF 생성"""
+        """영수증 분석 결과를 저장하고 PDF를 생성합니다."""
         try:
             user = await self.users_collection.find_one({"email": user_email})
             if not user:
@@ -257,23 +270,30 @@ class LLMService:
             if not storage:
                 raise HTTPException(status_code=404, detail="Storage '영수증' not found")
 
-            # 채팅 기록에서 OCR 결과와 분석 결과 찾기
-            chat_history = await self.chat_collection.find({
-                "user_id": user_email
-            }).sort("timestamp", -1).limit(10).to_list(None)
+            # 영수증 OCR 원본과 분석 결과 찾기
+            receipt_raw = await self.chat_collection.find_one(
+                {
+                    "user_id": user_email,
+                    "message_type": MessageType.RECEIPT_RAW.value,
+                    "type": "ocr_result"
+                },
+                sort=[("timestamp", -1)]
+            )
 
-            ocr_result = None
-            analysis_content = None
+            receipt_summary = await self.chat_collection.find_one(
+                {
+                    "user_id": user_email,
+                    "role": "model",
+                    "message_type": MessageType.RECEIPT_SUMMARY.value
+                },
+                sort=[("timestamp", -1)]
+            )
 
-            for message in chat_history:
-                if message["role"] == "model":
-                    analysis_content = message["content"]
-                    break
-                elif message["role"] == "user" and isinstance(message.get("content"), dict):
-                    ocr_result = message["content"]
+            if not receipt_raw:
+                raise HTTPException(status_code=404, detail="OCR 데이터를 찾을 수 없습니다")
 
-            if not analysis_content:
-                raise HTTPException(status_code=404, detail="No analysis content found")
+            if not receipt_summary:
+                raise HTTPException(status_code=404, detail="분석 결과를 찾을 수 없습니다")
 
             # 현재 시간 설정
             now = datetime.datetime.now(datetime.UTC)
@@ -289,15 +309,15 @@ class LLMService:
                 )
 
                 # 2. OCR 결과와 분석 결과 파싱
-                structured_data = self._parse_receipt_data(analysis_content)
-                if ocr_result:
-                    structured_data["ocr_result"] = ocr_result
+                structured_data = self._parse_receipt_data(receipt_summary.get("content", ""))
+                if receipt_raw.get("content"):
+                    structured_data["ocr_result"] = receipt_raw.get("content")
 
                 # 3. PDF 생성
                 pdf_result = await self.pdf_util.create_analysis_pdf(
                     user_id=user["_id"],
                     storage_id=storage["_id"],
-                    content=analysis_content,
+                    content=receipt_summary.get("content", ""),
                     structured_data=structured_data,
                     title=title
                 )
@@ -310,7 +330,7 @@ class LLMService:
                     "filename": f"{title}.pdf",
                     "s3_key": pdf_result["s3_key"],
                     "contents": {
-                        "text": analysis_content,
+                        "text": receipt_summary.get("content", ""),
                         "structured_data": structured_data
                     },
                     "file_size": pdf_result["file_size"],
