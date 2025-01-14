@@ -43,7 +43,7 @@ def setup_matplotlib_font():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(os.path.dirname(current_dir))
-        font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicLight.ttf')
+        font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicBold.ttf')
 
         if not os.path.exists(font_path):
             raise PDFGenerationError(f"폰트 파일을 찾을 수 없습니다: {font_path}")
@@ -77,11 +77,11 @@ class PDFUtil:
             config=Config(signature_version='s3v4')
         )
         # 한글 폰트 등록
-        self.font_name = 'NanumGothicLight'  # 폰트 이름 저장
+        self.font_name = 'NanumGothicBold'  # 폰트 이름 저장
         # PDF와 Matplotlib 둘 다를 위한 폰트 경로 설정
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(os.path.dirname(current_dir))
-        self.font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicLight.ttf')
+        self.font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicBold.ttf')
 
         if not os.path.exists(self.font_path):
             raise PDFGenerationError(f"폰트 파일을 찾을 수 없습니다: {self.font_path}")
@@ -90,7 +90,7 @@ class PDFUtil:
         # PDF와 Matplotlib 둘 다를 위한 폰트 경로 설정
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(os.path.dirname(current_dir))
-        self.font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicLight.ttf')
+        self.font_path = os.path.join(project_root, 'app', 'static', 'fonts', 'NanumGothicBold.ttf')
 
         if not os.path.exists(self.font_path):
             raise PDFGenerationError(f"폰트 파일을 찾을 수 없습니다: {self.font_path}")
