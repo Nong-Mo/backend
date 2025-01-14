@@ -1,11 +1,12 @@
 # app/routes/llm.py
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, Query, HTTPException
 from app.services.llm_service import LLMService
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
 from app.utils.auth_util import verify_jwt
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
+from bson.objectid import ObjectId
 
 router = APIRouter()
 
@@ -79,33 +80,33 @@ async def start_new_chat(
 
 
 class SaveStoryRequest(BaseModel):
-   storage_name: str = Field(..., description="저장할 보관함 이름 (예: '책', '영수증' 등)")
-   title: str = Field(..., description="단편소설 제목")
+    storage_name: str = Field(..., description="저장할 보관함 이름 (예: '책', '영수증' 등)")
+    title: str = Field(..., description="단편소설 제목")
+    message_id: str = Field(..., description="저장할 메시지 ID") 
 
 @router.post("/save-story", response_model=dict)
 async def save_story(
-       request: SaveStoryRequest,
-       user_id: str = Depends(verify_jwt),
-       llm_service: LLMService = Depends(get_llm_service)
+    request: SaveStoryRequest,
+    user_id: str = Depends(verify_jwt),
+    llm_service: LLMService = Depends(get_llm_service),
+    message_id: str = Query(..., description="저장할 메시지 ID") # message_id 쿼리 파라미터 추가
 ):
-   """
-   마지막 LLM 응답을 단편소설로 저장합니다.
+    """
+    마지막 LLM 응답을 단편소설로 저장합니다.
+    """
+    try:
+        if not ObjectId.is_valid(message_id):
+            raise HTTPException(status_code=400, detail="유효하지 않은 메시지 ID입니다.")
 
-   Args:
-       request: 저장할 단편소설 정보 (보관함 이름, 제목)
-       user_id: JWT에서 추출한 사용자 ID
-       llm_service: LLM 서비스 인스턴스
-
-   Returns:
-       dict: 저장 결과 및 파일 ID
-   """
-   file_id = await llm_service.save_story(
-       user_id,
-       request.storage_name,
-       request.title
-   )
-   return {
-       "status": "success",
-       "message": "결과가 저장되었습니다.",
-       "file_id": file_id
-   }
+        file_id = await llm_service.save_story(
+            user_id,
+            request.storage_name,
+            request.title,
+            message_id # message_id 전달
+        )
+        return {"status": "success", "message": "결과가 저장되었습니다.", "file_id": file_id}
+    except HTTPException as http_ex: # HTTPException 처리 추가
+        return {"status": "error", "message": str(http_ex.detail), "file_id": None}
+    except Exception as e:
+        logger.error(f"스토리 저장 중 오류 발생: {e}")
+        return {"status": "error", "message": "스토리 저장 중 오류가 발생했습니다.", "file_id": None}

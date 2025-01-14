@@ -9,6 +9,8 @@ from app.models.message_types import MessageType
 from app.utils.query_util import QueryProcessor
 from app.utils.tts_util import TTSUtil
 from app.utils.pdf_util import PDFUtil
+from bson.objectid import ObjectId
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -58,21 +60,30 @@ class LLMService:
                 detail=f"Failed to start new chat: {str(e)}"
             )
 
-    async def save_story(self, user_email: str, storage_name: str, title: str):
-        """보관함 타입에 따라 다른 저장 로직을 수행합니다."""
+    async def save_story(self, user_email: str, storage_name: str, title: str, message_id: str):
         try:
+            if not ObjectId.is_valid(message_id):
+                raise HTTPException(status_code=400, detail="유효하지 않은 메시지 ID입니다.")
+                
+            last_message = await self.chat_collection.find_one(
+                {"_id": ObjectId(message_id), "user_id": user_email}
+            )
+
+            story_content = last_message.get("content") # last_message에서 content를 가져옴
+
             if storage_name == "책":
-                return await self._save_book_story(user_email, title)
+                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
             elif storage_name == "영수증":
-                return await self._save_receipt_analysis(user_email, title)
+                file_id = await self._save_receipt_analysis(user_email, title, last_message) # last_message 전달
             else:
-                return await self._save_default_story(user_email, storage_name, title)
+                file_id = await self._save_default_story(user_email, storage_name, title, story_content, last_message) # last_message 전달
+            return file_id
+
+        except HTTPException as http_ex:
+            raise http_ex # HTTPException은 그대로 raise
         except Exception as e:
             logger.error(f"Error saving story: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to save story: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"스토리 저장 중 오류가 발생했습니다: {str(e)}")
 
     async def _save_book_story(self, user_email: str, title: str):
         """책 보관함용 저장 로직: MP3와 PDF 생성"""
@@ -108,8 +119,14 @@ class LLMService:
                     status_code=404,
                     detail="대화 내용을 찾을 수 없습니다. 새로운 대화를 시작해주세요."
                 )
+            
+            print("last_message: ", last_message)
 
             story_content = last_message.get("content")
+
+            print("story_content: ",story_content)
+
+
             if not story_content or not isinstance(story_content, str):
                 logger.error(f"Invalid content type in message: {type(story_content)}")
                 raise HTTPException(
