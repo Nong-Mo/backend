@@ -141,7 +141,6 @@ class ImageService:
 
             total_size = 0
             combined_text = []
-            image_paths = []
 
             for idx, file in enumerate(files):
                 content = await file.read()
@@ -152,11 +151,6 @@ class ImageService:
                 if vertices_data and len(vertices_data) > idx and vertices_data[idx]:
                     transformed_content = await self.transform_image(content, vertices_data[idx])
 
-                file_path = os.path.join(upload_dir, file.filename)
-                with open(file_path, "wb") as f:
-                    f.write(transformed_content)
-
-                image_paths.append(file_path)
                 total_size += len(transformed_content)
 
                 transformed_file = UploadFile(
@@ -172,6 +166,7 @@ class ImageService:
             final_text = " ".join(combined_text)
             refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
 
+            # MP3 생성 및 저장
             s3_key = await self.tts_util.convert_text_to_speech(
                 final_text,
                 f"combined_{file_id}",
@@ -194,16 +189,31 @@ class ImageService:
                 file_info=file_info
             )
 
-            # PDF 생성 및 저장
-            pdf_result = None
-            if image_paths:
-                pdf_result = await self.pdf_util.create_pdf_from_images(
-                    user_id=user["_id"],
-                    storage_id=storage_id,
-                    image_paths=image_paths,
-                    pdf_title=title,
-                    primary_file_id=mp3_file_id
-                )
+            # PDF 생성 및 저장 (텍스트 기반)
+            pdf_result = await self.pdf_util.create_text_pdf(
+                user_id=user["_id"],
+                storage_id=storage_id,
+                content=final_text,
+                title=title
+            )
+
+            # PDF 메타데이터 저장
+            pdf_info = {
+                "title": title,
+                "filename": f"{title}.pdf",
+                "s3_key": pdf_result["s3_key"],
+                "contents": final_text,
+                "file_size": pdf_result["file_size"],
+                "mime_type": "application/pdf",
+                "is_primary": False,
+                "primary_file_id": mp3_file_id
+            }
+
+            await self.save_file_metadata(
+                storage_id=storage_id,
+                user_id=user["_id"],
+                file_info=pdf_info
+            )
 
             return ImageDocument(
                 title=title,
