@@ -1,4 +1,5 @@
 # app/utils/query_util.py
+
 import json
 import logging
 import datetime
@@ -16,15 +17,83 @@ class QueryProcessor:
     def __init__(self, db, chat_collection):
         self.db = db
         self.chat_collection = chat_collection
+        self.files_collection = self.db.files
+        self.users_collection = self.db.users
         genai.configure(api_key=GOOGLE_API_KEY)
         self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
         self.chat_sessions = {}
 
+    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
+        """파일을 검색합니다."""
+        try:
+            user = await self.users_collection.find_one({"email": user_id})
+            if not user:
+                return {
+                    "type": "error",
+                    "message": "사용자를 찾을 수 없습니다.",
+                    "data": None
+                }
+
+            # 파일 제목과 내용에서 검색
+            search_query = {
+                "user_id": user["_id"],
+                "$or": [
+                    {"title": {"$regex": query, "$options": "i"}},
+                    {"contents": {"$regex": query, "$options": "i"}}
+                ]
+            }
+
+            files = await self.files_collection.find(search_query).to_list(length=None)
+
+            if files:
+                # 여러 파일이 발견된 경우
+                if len(files) > 1:
+                    file_list = [f"- {file['title']}" for file in files]
+                    return {
+                        "type": "file_found",
+                        "message": f"관련된 파일들을 찾았습니다:\n" + "\n".join(file_list),
+                        "data": {
+                            "files": [{
+                                "file_id": str(file["_id"]),
+                                "storage_id": str(file["storage_id"]),
+                                "title": file["title"]
+                            } for file in files]
+                        }
+                    }
+                
+                # 단일 파일인 경우
+                file = files[0]
+                return {
+                    "type": "file_found",
+                    "message": f"'{file['title']}' 파일을 찾았습니다.",
+                    "data": {
+                        "file_id": str(file["_id"]),
+                        "storage_id": str(file["storage_id"]),
+                        "title": file["title"]
+                    }
+                }
+
+            return {
+                "type": "chat",
+                "message": f"'{query}'와 관련된 파일을 찾을 수 없습니다.",
+                "data": None
+            }
+
+        except Exception as e:
+            logger.error(f"검색 오류: {str(e)}")
+            return {
+                "type": "error",
+                "message": "파일 검색 중 오류가 발생했습니다.",
+                "data": None
+            }
+
     async def save_chat_message(self, user_id: str, role: str, content: str | dict,
-                                message_type: MessageType = MessageType.GENERAL):
+                                message_type: MessageType = MessageType.GENERAL,
+                                data: Dict = None):
         """
         채팅 메시지를 저장합니다.
         - message_type: 메시지 종류 구분
+        - data: 추가 메타데이터 (뒷이야기의 경우 original_title, is_sequel 등)
         """
         message_doc = {
             "user_id": user_id,
@@ -34,7 +103,9 @@ class QueryProcessor:
             "timestamp": datetime.datetime.now()
         }
 
-        # OCR 결과인 경우 메시지 타입 지정
+        if data:
+            message_doc["data"] = data
+
         if isinstance(content, dict) and "type" not in message_doc:
             message_doc["type"] = "ocr_result"
 
@@ -46,7 +117,6 @@ class QueryProcessor:
             {"user_id": user_id}
         ).sort("timestamp", -1).limit(limit).to_list(length=None)
 
-        # OCR 결과는 별도로 처리
         formatted_history = []
         for msg in reversed(history):
             if msg.get("type") == "ocr_result":
@@ -63,62 +133,256 @@ class QueryProcessor:
 
         return formatted_history
 
-    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
-        """파일을 검색합니다."""
-        try:
-            user = await self.db.users.find_one({"email": user_id})
-            if not user:
-                return {
-                    "type": "error",
-                    "message": "사용자를 찾을 수 없습니다.",
-                    "data": None
-                }
+    async def get_user_files(self, user_id: str):
+        """사용자의 파일 목록을 조회합니다."""
+        user = await self.users_collection.find_one({"email": user_id})
+        if not user:
+            return []
+        return await self.files_collection.find({"user_id": user["_id"]}).to_list(length=None)
 
-            file = await self.db.files.find_one({
-                "user_id": user["_id"],
-                "title": {"$regex": query, "$options": "i"}
-            })
-
-            if file:
-                return {
-                    "type": "file_found",
-                    "message": f"'{file['title']}' 파일을 찾았습니다.",
-                    "data": {
-                        "file_id": str(file["_id"]),
-                        "storage_id": str(file["storage_id"]),
-                        "title": file["title"]
-                    }
-                }
-
-            return {
-                "type": "chat",
-                "message": f"'{query}'와 일치하는 파일을 찾을 수 없습니다.",
-                "data": None
-            }
-
-        except Exception as e:
-            logger.error(f"검색 오류: {str(e)}")
-            return {
-                "type": "error",
-                "message": "파일 검색 중 오류가 발생했습니다.",
-                "data": None
-            }
-
-    # app/utils/query_util.py
-
-    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True) -> \
-    Dict[str, Any]:
+    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True):
         """사용자 질의를 처리하고 적절한 응답을 생성합니다."""
         try:
+            # ---------------------------------------------------------------
+            # (A) 로컬 규칙 기반:
+            #     사용자의 query 안에 "저장"/"save"가 포함되어 있다면
+            #     LLM 의도 파악 없이 곧바로 저장 분기로 이동.
+            # ---------------------------------------------------------------
+            lower_query = query.lower()
+            if ("저장" in lower_query) or ("save" in lower_query):
+                logger.info("[Local Rule] '저장' or 'save' detected in user query. Triggering SAVE logic.")
+                # 가장 최근 모델 메시지를 조회
+                last_message = await self.chat_collection.find_one(
+                    {"user_id": user_id, "role": "model"},
+                    sort=[("timestamp", -1)]
+                )
+                if not last_message:
+                    return {
+                        "type": "error",
+                        "message": "저장할 내용이 없습니다.",
+                        "data": None
+                    }
+                return {
+                    "type": "story_save_ready",
+                    "message": "방금 작성한 이야기를 저장하시겠습니까?",
+                    "data": {
+                        "message_id": str(last_message["_id"]),
+                        "content": last_message["content"],
+                        "timestamp": last_message["timestamp"],
+                        "original_title": last_message.get("data", {}).get("original_title"),
+                        "is_sequel": last_message.get("data", {}).get("is_sequel", False),
+                    },
+                }
+
             # 채팅 히스토리 조회
             chat_history = await self.get_chat_history(user_id)
+            
+            if new_chat or user_id not in self.chat_sessions:
+                self.chat_sessions[user_id] = self.model.start_chat(
+                    history=[] if new_chat else chat_history
+                )
+            
+            chat = self.chat_sessions[user_id]
 
-            # OCR 결과가 있는지 확인
+            # 1단계: 사용자 의도 파악 (LLM 프롬프트)
+            intention_prompt = f"""
+            사용자의 의도를 파악해주세요.
+            사용자 메시지: {query}
+
+            다음과 같은 경우를 구분하여 판단하세요:
+            1. 파일 검색 의도:
+            - "~~ 찾아줘", "~~ 어디있어?"와 같은 직접적인 요청
+            - "지난번에 저장한 ~~" 처럼 이전 파일을 찾는 경우
+            - "~~ 관련 파일" 처럼 특정 주제의 파일을 찾는 경우
+
+            2. 뒷이야기 요청 의도:
+            - "뒷이야기 써줘", "다음 이야기 들려줘"
+            - "이어서 써줘", "다음 내용 알려줘"
+            - "후속 이야기 만들어줘"
+
+            3. 저장 요청 의도:
+            - "이걸 저장해줘", "저장해줘", "저장" 등의 직접적인 저장 요청
+            - "이 이야기를 저장해줘" 등의 현재 컨텍스트 저장 요청
+            - "이 내용 저장해줄래?" 등의 간접적인 저장 요청
+
+            응답 형식은 반드시 아래 중 하나로만:
+            - 파일 검색이면: SEARCH:검색할_키워드
+            - 뒷이야기 요청이면: SEQUEL:파일제목
+            - 저장 요청이면: SAVE
+            - 일반 대화면: CHAT
+            """
+
+            # 의도 파악하기
+            intention_response = chat.send_message(intention_prompt)
+            logger.debug(f"[Intention Response] {intention_response.text}")
+
+            # 2단계: 의도별 처리
+            # (2-1) 파일 검색
+            if intention_response.text.startswith("SEARCH:"):
+                search_keyword = intention_response.text.split("SEARCH:", 1)[1].strip()
+                search_result = await self.search_file(user_id, search_keyword)
+
+                # 히스토리 저장 (response.text --> 여기서는 search_result["message"] 사용)
+                if save_to_history:
+                    await self.save_chat_message(user_id, "user", query)
+                    await self.save_chat_message(
+                        user_id, 
+                        "model",
+                        search_result["message"],  
+                        MessageType.GENERAL
+                    )
+                
+                return search_result
+            
+            # (2-2) 뒷이야기 요청
+            elif intention_response.text.startswith("SEQUEL:"):
+                title = intention_response.text.split("SEQUEL:", 1)[1].strip()
+                
+                # 해당 파일 검색
+                user = await self.users_collection.find_one({"email": user_id})
+                if not user:
+                    return {
+                        "type": "error",
+                        "message": "사용자 정보를 찾을 수 없습니다.",
+                        "data": None
+                    }
+                
+                file = await self.files_collection.find_one({
+                    "user_id": user["_id"],
+                    "title": title,
+                    "mime_type": {"$in": ["text/plain", "application/pdf", "audio/mp3"]}
+                })
+                
+                if not file:
+                    return {
+                        "type": "error",
+                        "message": "해당 이야기를 찾을 수 없습니다.",
+                        "data": None
+                    }
+                
+                # 스토리 컨텍스트 구성
+                story_content = file['contents'] if isinstance(file['contents'], str) else file['contents'].get('text', '')
+                story_context = f"""
+                [원본 이야기 제목]
+                {file['title']} 이 제목은 사용자가 임의로 등록한 책의 제목입니다. 등장인물의 이름이 아닙니다.
+                
+                [원본 이야기 내용]
+                {story_content}
+                """
+                
+                # 뒷이야기 생성을 위한 프롬프트
+                sequel_prompt = f"""
+                {story_context}
+                
+                [시스템 역할]
+                당신은 숙련된 스토리텔러입니다. 당신의 임무는 본래의 이야기를 바탕으로 이야기를 창작하는 것입니다.
+                
+                [뒷이야기 작성 규칙]
+                1. 원본 스토리의 흐름을 이어갈 것.
+                2. 이야기 속에는 명시적으로 이름이 언급된 인물만 등장시켜 주세요.
+                3. 새로운 인물을 추가해야 하는 경우, 원본 이야기의 맥락과 일치하는 인물만 추가해주세요.
+                4. 원본의 세계관, 캐릭터, 설정을 유지할 것.
+                5. 새로운 사건이나 전개를 추가할 것.
+                6. 원본의 문체와 톤을 유지할 것.
+                7. 기존 이야기의 복선이나 미해결된 부분을 활용할 것.
+                8. 기존 이야기의 흐름을 최우선으로 반영하여 긍정적인 이야기로 무조건 마무리하지 않을 것.
+                
+                [응답 형식]
+                - 바로 뒷이야기 본문으로 시작
+                - 설명이나 메타 정보 없이 순수 이야기 내용만 작성
+                - 부가적인 설명이나 맺음말 없이 이야기로만 구성
+
+                [추가 지침]
+                이야기는 500자 정도로 작성해주세요.
+                
+                [사용자 요청]
+                {query}
+                """
+                
+                response = chat.send_message(sequel_prompt)
+                
+                if save_to_history:
+                    await self.save_chat_message(user_id, "user", query)
+                    await self.save_chat_message(
+                        user_id, 
+                        "model", 
+                        response.text, 
+                        MessageType.BOOK_STORY
+                    )
+
+                return {
+                    "type": "chat",
+                    "message": response.text,
+                    "data": {
+                        "original_title": file['title'],
+                        "is_sequel": True
+                    }
+                }
+            
+            # (2-3) 저장 요청 처리: LLM이 정확히 "SAVE"라고만 주는 케이스
+            #       -> 하지만 "네, 저장하겠습니다" 등 다른 문장이면 안 잡히므로
+            #          아래 '부분 일치' 처리를 추가
+            elif intention_response.text == "SAVE":
+                logger.info("[LLM Intention] Exactly 'SAVE' detected.")
+                last_message = await self.chat_collection.find_one(
+                    {"user_id": user_id, "role": "model"},
+                    sort=[("timestamp", -1)]
+                )
+                if not last_message:
+                    return {
+                        "type": "error",
+                        "message": "저장할 내용이 없습니다.",
+                        "data": None
+                    }
+
+                return {
+                    "type": "story_save_ready",
+                    "message": "방금 작성한 이야기를 저장하시겠습니까?",
+                    "data": {
+                        "message_id": str(last_message["_id"]),
+                        "content": last_message["content"],
+                        "timestamp": last_message["timestamp"],
+                        "original_title": last_message.get("data", {}).get("original_title"),
+                        "is_sequel": last_message.get("data", {}).get("is_sequel", False),
+                    },
+                }
+
+            # (2-4) 일반 대화 or '부분 일치' 후처리
+            #       "SAVE"라는 단어가 아닌 "네, 저장하겠습니다" 등
+            #       (저장/Save 키워드 포함 시 저장 분기로)
+            normalized_intent = intention_response.text.lower()
+            if ("저장" in normalized_intent) or ("save" in normalized_intent):
+                logger.info("[LLM Partial Parse] '저장'/'save' found in LLM response. Triggering SAVE logic.")
+                last_message = await self.chat_collection.find_one(
+                    {"user_id": user_id, "role": "model"},
+                    sort=[("timestamp", -1)]
+                )
+                if not last_message:
+                    return {
+                        "type": "error",
+                        "message": "저장할 내용이 없습니다.",
+                        "data": None
+                    }
+
+                return {
+                    "type": "story_save_ready",
+                    "message": "방금 작성한 이야기를 저장하시겠습니까?",
+                    "data": {
+                        "message_id": str(last_message["_id"]),
+                        "content": last_message["content"],
+                        "timestamp": last_message["timestamp"],
+                        "original_title": last_message.get("data", {}).get("original_title"),
+                        "is_sequel": last_message.get("data", {}).get("is_sequel", False),
+                    },
+                }
+
+            # ----------------------------------------------------------------
+            # (3) 일반 대화 처리
+            # ----------------------------------------------------------------
             ocr_data = None
             for msg in reversed(chat_history):
                 if isinstance(msg.get("content"), dict) and msg.get("type") == "ocr_result":
                     ocr_data = msg["content"]
-                    # OCR 데이터를 MessageType.RECEIPT_RAW로 저장
                     await self.save_chat_message(
                         user_id,
                         "user",
@@ -127,15 +391,6 @@ class QueryProcessor:
                     )
                     break
 
-            # 새 채팅 세션 시작 또는 기존 세션 사용
-            if new_chat or user_id not in self.chat_sessions:
-                self.chat_sessions[user_id] = self.model.start_chat(
-                    history=[] if new_chat else chat_history
-                )
-
-            chat = self.chat_sessions[user_id]
-
-            # 사용자의 파일 목록 가져오기
             files = await self.get_user_files(user_id)
 
             # OCR 데이터가 있는 경우 컨텍스트에 포함
@@ -143,10 +398,9 @@ class QueryProcessor:
             if ocr_data:
                 ocr_context = f"\n\nOCR 분석 결과:\n{json.dumps(ocr_data, ensure_ascii=False, indent=2)}"
 
-            # 대화 맥락 추출
+            # 대화 맥락 요약
             context_summary = "\n현재 대화 맥락:"
-            current_context = set()  # 중복 맥락 제거를 위한 set
-
+            current_context = set()
             for msg in reversed(chat_history):
                 if msg.get("type") == "ocr_result" and "OCR" not in current_context:
                     context_summary += "\n- OCR 분석 진행중"
@@ -158,45 +412,16 @@ class QueryProcessor:
                     context_summary += "\n- 영수증 분석 진행중"
                     current_context.add("RECEIPT")
 
-            # 최근 대화 내용 포맷팅
-            recent_chat = "\n\n최근 대화 내용:"
-            for msg in chat_history[-5:]:  # 최근 5개 메시지
-                speaker = "사용자" if msg["role"] == "user" else "AI"
-                content = msg["parts"] if isinstance(msg["parts"], str) else json.dumps(msg["parts"],
-                                                                                        ensure_ascii=False)
-                recent_chat += f"\n{speaker}: {content}"
-
-            # 프롬프트 구성
+            # 일반 대화를 위한 프롬프트 구성
             prompt = f"""
                 [시스템 역할]
-                당신은 Audio To Document(A2D) 서비스의 AI 어시스턴트입니다. 사용자와의 대화를 기반으로 다양한 형태의 문서를 생성하고, 음성 파일, 이미지, 문서를 관리하는 역할을 합니다.
-                [스토리 생성 규칙]
-                1. 스토리 생성 요청을 받으면:
-                - 부가적인 설명이나 인사말 없이 바로 스토리 본문으로 시작합니다.
-                - 스토리가 끝나면 바로 종료합니다.
-                - "어떠셨나요?", "저장하시겠습니까?" 등의 마무리 멘트를 넣지 않습니다.
-
-                2. 일반 대화의 경우:
-                - 자연스러운 대화를 진행합니다.
-                - 필요한 경우 스토리 작성을 제안할 수 있습니다.
-                
-                [서비스 핵심 기능]
-                1. 대화 기반 문서 생성:
-                   - 대화 내용을 바탕으로 한 스토리/문서 생성
-                   - 보관함별 맞춤형 저장:
-                     * 책: 스토리를 MP3와 PDF로 변환하여 저장
-                     * 영수증: OCR 분석 결과와 시각화된 보고서 생성
-                     * 기타 보관함: 대화 내용을 문서화하여 저장
-
-                2. 파일 변환 및 관리:
-                   - 이미지/문서 → 음성(MP3) + PDF 변환
-                   - 보관함: "책", "영수증", "굿즈", "필름 사진", "서류", "티켓"
-                   - 보관함 간 파일 이동
-                   - 파일 검색 및 삭제
+                당신은 Analog To Digital(A2D) 서비스의 AI 어시스턴트입니다. 
+                사용자와의 대화를 기반으로 다양한 형태의 문서를 생성하고, 
+                음성 파일, 이미지, 문서를 관리하는 역할을 합니다.
 
                 [컨텍스트 정보]
                 - 사용자 파일 수: {len(files)}개
-                - 파일 목록: {', '.join(f['title'] for f in files)}{context_summary}{recent_chat}
+                - 파일 목록: {', '.join(f['title'] for f in files)}{context_summary}
                 {ocr_context}
 
                 [사용자 질문]
@@ -204,75 +429,43 @@ class QueryProcessor:
 
                 [응답 가이드라인]
                 1. 스토리 생성 시:
-                   - 바로 스토리 본문을 시작합니다.
-                   - 부가 설명이나 맺음말을 넣지 않습니다.
-                   
+                - 네 알겠습니다 등의 대답은 생략합니다.
+                - 바로 스토리 본문을 시작합니다.
+                - 부가 설명이나 맺음말을 넣지 않습니다.
+                
                 2. 일반 대화 시:
-                   - 자연스러운 대화를 이어갑니다.
-                   - 필요한 경우 서비스 기능을 안내합니다.
-                3. 대화 내용 저장 요청 시:
-                   - 적합한 보관함 추천
-                   - 저장 가능한 형태 안내 (MP3, PDF, 텍스트 등)
-                   - 제목 설정 제안
-                   - 저장 후 접근 방법 설명
-
-                4. 파일 검색 및 관리:
-                   - 정확한 파일명과 위치 안내
-                   - 파일 이동 옵션 제시
-                   - 관련 파일 추천
-
-                5. 분석 및 요약:
-                   - 영수증: 상세 분석 및 시각화 제공
-                   - 책/문서: 주요 내용 요약 및 오디오북 변환 안내
-                   - 보관함별 최적화된 분석 제공
-
-                6. 일반 응답:
-                   - 한국어로 친근하게 응답
-                   - 사용자의 의도 파악하여 적절한 기능 추천
-                   - 명확한 단계별 안내 제공
-
-                7. 제한사항 안내:
-                   - 파일 형식 및 크기 제한
-                   - 보관함별 특성에 따른 제약사항
-                   - 개인정보 보호 관련 주의사항
-
-                8. 오류 상황 대처:
-                   - 파일 미발견 시 대안 제시
-                   - 잘못된 요청에 대한 친절한 안내
-                   - 시스템 제한사항 설명
+                - 자연스러운 대화를 이어갑니다.
+                - 필요한 경우 서비스 기능을 안내합니다.
             """
 
-            # Gemini 모델로 응답 생성
             response = chat.send_message(prompt)
-            response_text = response.text.strip()
-
+            
             if save_to_history:
                 # 사용자 메시지 저장
-                await self.save_chat_message(
-                    user_id,
-                    "user",
-                    query,
-                    MessageType.GENERAL
-                )
+                await self.save_chat_message(user_id, "user", query)
 
-                # 응답 메시지 타입 결정
+                # 일반 대화 타입 판단
                 message_type = MessageType.GENERAL
                 if ocr_data:
                     message_type = MessageType.RECEIPT_SUMMARY
-                elif any(keyword in query.lower() for keyword in ["스토리", "이야기", "소설", "글쓰기"]):
+                elif any(keyword in query.lower() for keyword in ["이걸", "스토리", "이야기", "소설", "글쓰기"]):
                     message_type = MessageType.BOOK_STORY
 
-                # 응답 메시지 저장
                 await self.save_chat_message(
                     user_id,
                     "model",
-                    response_text,
-                    message_type
+                    response.text,
+                    message_type,
+                    data={
+                        # sequel 여부 (만약 intention이 SEQUEL이면 True)
+                        "original_title": None,
+                        "is_sequel": False
+                    }
                 )
 
             return {
                 "type": "chat",
-                "message": response_text,
+                "message": response.text,
                 "data": None
             }
 
@@ -282,12 +475,3 @@ class QueryProcessor:
                 status_code=500,
                 detail=f"Query processing failed: {str(e)}"
             )
-
-    async def get_user_files(self, user_id: str):
-        """사용자의 파일 목록을 조회합니다."""
-        user = await self.db.users.find_one({"email": user_id})
-        if not user:
-            return []
-        return await self.db.files.find({
-            "user_id": user["_id"]
-        }).to_list(length=None)
