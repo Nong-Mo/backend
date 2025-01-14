@@ -145,7 +145,8 @@ class ImageService:
 
             total_size = 0
             image_paths = []
-
+            
+            @timing_decorator
             async def process_file(file: UploadFile, idx: int):
                 nonlocal total_size
 
@@ -168,11 +169,11 @@ class ImageService:
                 transformed_file = UploadFile(
                     filename=file.filename,
                     file=BytesIO(transformed_content),
-                    headers={"content-type": "image/jped"}
+                    headers={"content-type": "image/jpeg"}
                 )
 
                 # OCR 처리 진행 
-                ocr_text = await process_ocr(transformed_content)
+                ocr_text = await process_ocr(transformed_file)
                 await transformed_file.close()
 
                 # OCR 결과가 없는 경우 빈 결과 반환
@@ -192,6 +193,7 @@ class ImageService:
             results = await asyncio.gather(*tasks)
 
             # 결과 정렬 (입력 순서를 보장하기 위해)
+            image_paths.sort(key=lambda x: x[0])
             results.sort(key=lambda x: x[0])
 
             # 텍스트와 오디오 바이너리 분리
@@ -203,7 +205,7 @@ class ImageService:
 
             # S3에 업로드
             s3_key = f"tts/{file_id}/{title}.mp3"
-            await asyncio.get_event_loop().run_inexecutor(
+            await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.tts_util.s3_client.put_object(
                     Bucket=S3_BUCKET_NAME,

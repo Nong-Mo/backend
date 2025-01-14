@@ -1,8 +1,10 @@
 import time
 import logging
 
-# Logger 설정
-logger = logging.getLogger("timing_logger")
+# # Logger 설정
+# logger = logging.getLogger("timing_logger")
+# 로거 설정
+logger = logging.getLogger("uvicorn.access")
 logger.setLevel(logging.INFO)
 
 # 데코레이터 정의
