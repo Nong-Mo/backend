@@ -111,15 +111,10 @@ class ImageService:
 
         return transformed_bytes.tobytes()
 
-    async def process_images(
-            self,
-            storage_name: str,
-            title: str,
-            files: List[UploadFile],
-            user_id: str,
-            vertices_data: Optional[List[Optional[List[Dict[str, float]]]]] = None
-    ) -> ImageDocument:
-        """이미지들을 처리하고 변환합니다."""
+    # image_services.py의 process_images 함수 수정
+    async def process_images(self, storage_name: str, title: str, files: List[UploadFile],
+                             user_id: str,
+                             vertices_data: Optional[List[Optional[List[Dict[str, float]]]]] = None) -> ImageDocument:
         if storage_name not in self.ALLOWED_STORAGE_NAMES:
             raise HTTPException(status_code=400, detail=f"Invalid storage name")
 
@@ -189,10 +184,10 @@ class ImageService:
                 file_info=file_info
             )
 
-            # PDF 생성 및 저장 (텍스트 기반)
+            # PDF 생성 및 저장
             pdf_result = await self.pdf_util.create_text_pdf(
                 user_id=user["_id"],
-                storage_id=storage_id,
+                storage_id=ObjectId(storage_id),  # ObjectId로 변환
                 content=final_text,
                 title=title
             )
@@ -206,7 +201,7 @@ class ImageService:
                 "file_size": pdf_result["file_size"],
                 "mime_type": "application/pdf",
                 "is_primary": False,
-                "primary_file_id": mp3_file_id
+                "primary_file_id": ObjectId(mp3_file_id)  # ObjectId로 변환
             }
 
             await self.save_file_metadata(
