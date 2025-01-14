@@ -19,6 +19,7 @@ from app.utils.tts_util import TTSUtil
 from app.utils.pdf_util import PDFUtil
 from app.models.image import ImageMetadata, ImageDocument
 from app.core.config import S3_BUCKET_NAME
+from app.utils.timer_util import timing_decorator
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class ImageService:
 
         return transformed_bytes.tobytes()
 
+    @timing_decorator
     async def process_images(
             self,
             storage_name: str,
