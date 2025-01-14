@@ -15,7 +15,6 @@ import tempfile
 import datetime
 import img2pdf
 import boto3
-import logging
 from bson import ObjectId
 from typing import List, Optional, Dict
 from fastapi import HTTPException
@@ -104,7 +103,8 @@ class PDFUtil:
             logger.error(f"Could not register Korean font for ReportLab: {str(e)}")
             raise PDFGenerationError(f"ReportLab 폰트 등록 실패: {str(e)}")
 
-    async def create_text_pdf(self, user_id: ObjectId, storage_id: ObjectId, content: str, title: str) -> Dict[str, any]:
+    async def create_text_pdf(self, user_id: ObjectId, storage_id: ObjectId, content: str, title: str) -> Dict[
+        str, any]:
         """텍스트 내용을 PDF로 변환"""
         try:
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
@@ -118,25 +118,43 @@ class PDFUtil:
                 )
 
                 styles = getSampleStyleSheet()
+
+                # 제목 스타일 설정
                 title_style = ParagraphStyle(
                     'CustomTitle',
                     parent=styles['Title'],
                     fontName=self.font_name,
-                    fontSize=24,
-                    spaceAfter=30
+                    fontSize=34,
+                    spaceAfter=40,  # 제목 아래 여백 증가
+                    alignment=1,  # 가운데 정렬
+                    leading=32  # 제목 줄간격
                 )
+
+                # 본문 스타일 설정
                 content_style = ParagraphStyle(
                     'CustomBody',
                     parent=styles['Normal'],
                     fontName=self.font_name,
-                    fontSize=12,
-                    leading=14
+                    fontSize=24,
+                    spaceAfter=16,  # 문단 간 여백
+                    leading=36,  # 줄간격 (1.5배)
+                    firstLineIndent=24,  # 문단 첫 줄 들여쓰기
+                    alignment=4  # 왼쪽 정렬
                 )
+
+                # 페이지 여백을 위한 프레임 설정
+                frame_width = letter[0] - 144  # 좌우 여백 72 포인트씩
+                frame_height = letter[1] - 144  # 상하 여백 72 포인트씩
 
                 story = []
                 story.append(Paragraph(title, title_style))
-                story.append(Spacer(1, 12))
-                story.append(Paragraph(content, content_style))
+                story.append(Spacer(1, 20))
+
+                # 본문을 문단별로 분리하고 스타일 적용
+                paragraphs = content.split('\n')
+                for para in paragraphs:
+                    if para.strip():  # 빈 문단 제외
+                        story.append(Paragraph(para, content_style))
 
                 doc.build(story)
 
@@ -154,9 +172,8 @@ class PDFUtil:
 
                 file_size = os.path.getsize(tmp_file.name)
 
-                # MongoDB에 저장할 때 PDF ID를 문자열로 반환
                 return {
-                    "file_id": pdf_id,  # UUID 문자열
+                    "file_id": pdf_id,
                     "s3_key": s3_key,
                     "file_size": file_size
                 }
