@@ -7,7 +7,9 @@ import logging
 from fastapi import HTTPException
 import boto3
 from io import BytesIO
-from pydub import AudioSegment
+import audioread
+import wave
+import os
 from typing import List
 import math
 from app.core.config import (
@@ -106,39 +108,81 @@ class TTSUtil:
         
         return response
 
+    async def _combine_mp3_files(self, audio_binaries: List[bytes]) -> bytes:
+        """
+        여러 MP3 파일을 하나로 결합합니다.
+        
+        Args:
+            audio_binaries (List[bytes]): MP3 바이너리 데이터 리스트
+            
+        Returns:
+            bytes: 결합된 MP3 파일의 바이너리 데이터
+        """
+        try:
+            # 임시 디렉토리 생성
+            temp_dir = "/tmp/audio_combine"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # 각 바이너리 데이터를 임시 파일로 저장
+            temp_files = []
+            for i, binary in enumerate(audio_binaries):
+                temp_path = os.path.join(temp_dir, f"temp_{i}.mp3")
+                with open(temp_path, 'wb') as f:
+                    f.write(binary)
+                temp_files.append(temp_path)
+            
+            # 결합된 파일을 저장할 경로
+            output_path = os.path.join(temp_dir, "combined.mp3")
+            
+            # 첫 번째 파일을 기준으로 결합
+            with open(output_path, 'wb') as outfile:
+                for temp_file in temp_files:
+                    with open(temp_file, 'rb') as infile:
+                        outfile.write(infile.read())
+            
+            # 결합된 파일 읽기
+            with open(output_path, 'rb') as f:
+                combined_data = f.read()
+            
+            # 임시 파일들 정리
+            for temp_file in temp_files:
+                os.remove(temp_file)
+            os.remove(output_path)
+            os.rmdir(temp_dir)
+            
+            return combined_data
+            
+        except Exception as e:
+            logger.error(f"Error combining MP3 files: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to combine audio files: {str(e)}"
+            )
+
     async def convert_text_to_speech(self, text: str, filename: str, title: str) -> str:
         """
         텍스트를 음성으로 변환하고 S3에 저장합니다.
-        긴 텍스트의 경우 자동으로 분할하여 처리합니다.
-
+        
         Args:
             text (str): 변환할 텍스트
             filename (str): 저장할 파일 이름
             title (str): 파일 제목
-
+            
         Returns:
             str: S3에 저장된 파일의 키
         """
         try:
             # 텍스트 분할
             text_parts = self._split_text(text)
-            audio_segments = []
+            audio_binaries = []
 
             # 각 부분에 대해 TTS 변환 수행
             for part in text_parts:
                 audio_binary = await self._get_audio_from_api(part)
-                audio = AudioSegment.from_mp3(BytesIO(audio_binary))
-                audio_segments.append(audio)
+                audio_binaries.append(audio_binary)
 
-            # 모든 오디오 세그먼트 병합
-            combined_audio = audio_segments[0]
-            for segment in audio_segments[1:]:
-                combined_audio += segment
-
-            # 병합된 오디오를 바이트로 변환
-            output = BytesIO()
-            combined_audio.export(output, format='mp3')
-            final_audio = output.getvalue()
+            # 오디오 파일 결합
+            final_audio = await self._combine_mp3_files(audio_binaries)
 
             # S3에 업로드
             s3_key = f"tts/{filename}/{title}.mp3"
@@ -156,4 +200,7 @@ class TTSUtil:
 
         except Exception as e:
             logger.error(f"TTS Error: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"TTS 생성 실패: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"TTS 생성 실패: {str(e)}"
+            )
