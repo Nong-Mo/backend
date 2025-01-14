@@ -23,6 +23,7 @@ class LLMService:
         self.query_processor = QueryProcessor(mongodb_client, self.chat_collection)
         self.tts_util = TTSUtil()
         self.pdf_util = PDFUtil(mongodb_client)
+        self.new_story = {}
 
     async def process_query(self, user_id: str, query: str, save_to_history: bool = True):
         """사용자 질의를 처리합니다."""

@@ -16,9 +16,75 @@ class QueryProcessor:
     def __init__(self, db, chat_collection):
         self.db = db
         self.chat_collection = chat_collection
+        self.files_collection = self.db.files
+        self.users_collection = self.db.users
         genai.configure(api_key=GOOGLE_API_KEY)
         self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
         self.chat_sessions = {}
+
+    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
+        """파일을 검색합니다."""
+        try:
+            user = await self.users_collection.find_one({"email": user_id})
+            if not user:
+                return {
+                    "type": "error",
+                    "message": "사용자를 찾을 수 없습니다.",
+                    "data": None
+                }
+
+            # 파일 제목과 내용에서 검색
+            search_query = {
+                "user_id": user["_id"],
+                "$or": [
+                    {"title": {"$regex": query, "$options": "i"}},
+                    {"contents": {"$regex": query, "$options": "i"}}
+                ]
+            }
+
+            files = await self.files_collection.find(search_query).to_list(length=None)
+
+            if files:
+                # 여러 파일이 발견된 경우
+                if len(files) > 1:
+                    file_list = [f"- {file['title']}" for file in files]
+                    return {
+                        "type": "file_found",
+                        "message": f"관련된 파일들을 찾았습니다:\n" + "\n".join(file_list),
+                        "data": {
+                            "files": [{
+                                "file_id": str(file["_id"]),
+                                "storage_id": str(file["storage_id"]),
+                                "title": file["title"]
+                            } for file in files]
+                        }
+                    }
+                
+                # 단일 파일인 경우
+                file = files[0]
+                return {
+                    "type": "file_found",
+                    "message": f"'{file['title']}' 파일을 찾았습니다.",
+                    "data": {
+                        "file_id": str(file["_id"]),
+                        "storage_id": str(file["storage_id"]),
+                        "title": file["title"]
+                    }
+                }
+
+            return {
+                "type": "chat",
+                "message": f"'{query}'와 관련된 파일을 찾을 수 없습니다.",
+                "data": None
+            }
+
+        except Exception as e:
+            logger.error(f"검색 오류: {str(e)}")
+            return {
+                "type": "error",
+                "message": "파일 검색 중 오류가 발생했습니다.",
+                "data": None
+            }
 
     async def save_chat_message(self, user_id: str, role: str, content: str | dict,
                                 message_type: MessageType = MessageType.GENERAL):
@@ -63,62 +129,62 @@ class QueryProcessor:
 
         return formatted_history
 
-    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
-        """파일을 검색합니다."""
-        try:
-            user = await self.db.users.find_one({"email": user_id})
-            if not user:
-                return {
-                    "type": "error",
-                    "message": "사용자를 찾을 수 없습니다.",
-                    "data": None
-                }
+    async def get_user_files(self, user_id: str):
+        """사용자의 파일 목록을 조회합니다."""
+        user = await self.users_collection.find_one({"email": user_id})
+        if not user:
+            return []
+        return await self.files_collection.find({
+            "user_id": user["_id"]
+        }).to_list(length=None)
 
-            file = await self.db.files.find_one({
-                "user_id": user["_id"],
-                "title": {"$regex": query, "$options": "i"}
-            })
-
-            if file:
-                return {
-                    "type": "file_found",
-                    "message": f"'{file['title']}' 파일을 찾았습니다.",
-                    "data": {
-                        "file_id": str(file["_id"]),
-                        "storage_id": str(file["storage_id"]),
-                        "title": file["title"]
-                    }
-                }
-
-            return {
-                "type": "chat",
-                "message": f"'{query}'와 일치하는 파일을 찾을 수 없습니다.",
-                "data": None
-            }
-
-        except Exception as e:
-            logger.error(f"검색 오류: {str(e)}")
-            return {
-                "type": "error",
-                "message": "파일 검색 중 오류가 발생했습니다.",
-                "data": None
-            }
-
-    # app/utils/query_util.py
-
-    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True) -> \
-    Dict[str, Any]:
+    async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True):
         """사용자 질의를 처리하고 적절한 응답을 생성합니다."""
         try:
             # 채팅 히스토리 조회
             chat_history = await self.get_chat_history(user_id)
+            
+            if new_chat or user_id not in self.chat_sessions:
+                self.chat_sessions[user_id] = self.model.start_chat(
+                    history=[] if new_chat else chat_history
+                )
+            
+            chat = self.chat_sessions[user_id]
 
-            # OCR 결과가 있는지 확인
+            # 1단계: 사용자 의도 파악 - 파일 검색인지 먼저 확인
+            intention_prompt = f"""
+            사용자가 파일을 찾으려고 하는건지 파악해주세요.
+            사용자 메시지: {query}
+
+            다음과 같은 경우 파일 검색으로 판단하세요:
+            - "~~ 찾아줘", "~~ 어디있어?"와 같은 직접적인 요청
+            - "지난번에 저장한 ~~" 처럼 이전 파일을 찾는 경우
+            - "~~ 관련 파일" 처럼 특정 주제의 파일을 찾는 경우
+
+            응답 형식:
+            - 파일 검색이면: SEARCH:검색할_키워드
+            - 일반 대화면: CHAT
+            """
+
+            # 의도 파악하기
+            intention_response = chat.send_message(intention_prompt)
+            
+            # 2단계: 파일 검색 의도가 있다면 search_file 실행
+            if intention_response.text.startswith("SEARCH:"):
+                search_keyword = intention_response.text.split("SEARCH:")[1].strip()
+                search_result = await self.search_file(user_id, search_keyword)
+                
+                if save_to_history:
+                    await self.save_chat_message(user_id, "user", query)
+                    await self.save_chat_message(user_id, "model", search_result["message"])
+                
+                return search_result
+
+            # OCR 데이터 확인
             ocr_data = None
             for msg in reversed(chat_history):
                 if isinstance(msg.get("content"), dict) and msg.get("type") == "ocr_result":
                     ocr_data = msg["content"]
-                    # OCR 데이터를 MessageType.RECEIPT_RAW로 저장
                     await self.save_chat_message(
                         user_id,
                         "user",
@@ -126,14 +192,6 @@ class QueryProcessor:
                         MessageType.RECEIPT_RAW
                     )
                     break
-
-            # 새 채팅 세션 시작 또는 기존 세션 사용
-            if new_chat or user_id not in self.chat_sessions:
-                self.chat_sessions[user_id] = self.model.start_chat(
-                    history=[] if new_chat else chat_history
-                )
-
-            chat = self.chat_sessions[user_id]
 
             # 사용자의 파일 목록 가져오기
             files = await self.get_user_files(user_id)
@@ -145,7 +203,7 @@ class QueryProcessor:
 
             # 대화 맥락 추출
             context_summary = "\n현재 대화 맥락:"
-            current_context = set()  # 중복 맥락 제거를 위한 set
+            current_context = set()
 
             for msg in reversed(chat_history):
                 if msg.get("type") == "ocr_result" and "OCR" not in current_context:
@@ -157,14 +215,6 @@ class QueryProcessor:
                 elif msg.get("message_type") == MessageType.RECEIPT_SUMMARY.value and "RECEIPT" not in current_context:
                     context_summary += "\n- 영수증 분석 진행중"
                     current_context.add("RECEIPT")
-
-            # 최근 대화 내용 포맷팅
-            recent_chat = "\n\n최근 대화 내용:"
-            for msg in chat_history[-5:]:  # 최근 5개 메시지
-                speaker = "사용자" if msg["role"] == "user" else "AI"
-                content = msg["parts"] if isinstance(msg["parts"], str) else json.dumps(msg["parts"],
-                                                                                        ensure_ascii=False)
-                recent_chat += f"\n{speaker}: {content}"
 
             # 프롬프트 구성
             prompt = f"""
@@ -196,7 +246,7 @@ class QueryProcessor:
 
                 [컨텍스트 정보]
                 - 사용자 파일 수: {len(files)}개
-                - 파일 목록: {', '.join(f['title'] for f in files)}{context_summary}{recent_chat}
+                - 파일 목록: {', '.join(f['title'] for f in files)}{context_summary}
                 {ocr_context}
 
                 [사용자 질문]
@@ -242,37 +292,21 @@ class QueryProcessor:
                    - 시스템 제한사항 설명
             """
 
-            # Gemini 모델로 응답 생성
             response = chat.send_message(prompt)
-            response_text = response.text.strip()
-
+            
             if save_to_history:
-                # 사용자 메시지 저장
-                await self.save_chat_message(
-                    user_id,
-                    "user",
-                    query,
-                    MessageType.GENERAL
-                )
-
-                # 응답 메시지 타입 결정
+                await self.save_chat_message(user_id, "user", query)
                 message_type = MessageType.GENERAL
                 if ocr_data:
                     message_type = MessageType.RECEIPT_SUMMARY
                 elif any(keyword in query.lower() for keyword in ["스토리", "이야기", "소설", "글쓰기"]):
                     message_type = MessageType.BOOK_STORY
-
-                # 응답 메시지 저장
-                await self.save_chat_message(
-                    user_id,
-                    "model",
-                    response_text,
-                    message_type
-                )
+                
+                await self.save_chat_message(user_id, "model", response.text, message_type)
 
             return {
                 "type": "chat",
-                "message": response_text,
+                "message": response.text,
                 "data": None
             }
 
@@ -282,12 +316,3 @@ class QueryProcessor:
                 status_code=500,
                 detail=f"Query processing failed: {str(e)}"
             )
-
-    async def get_user_files(self, user_id: str):
-        """사용자의 파일 목록을 조회합니다."""
-        user = await self.db.users.find_one({"email": user_id})
-        if not user:
-            return []
-        return await self.db.files.find({
-            "user_id": user["_id"]
-        }).to_list(length=None)
