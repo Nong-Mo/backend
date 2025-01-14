@@ -89,20 +89,20 @@ async def save_story(
     request: SaveStoryRequest,
     user_id: str = Depends(verify_jwt),
     llm_service: LLMService = Depends(get_llm_service),
-    message_id: str = Query(..., description="저장할 메시지 ID") # message_id 쿼리 파라미터 추가
+    # message_id: str = Query(..., description="저장할 메시지 ID") # message_id 쿼리 파라미터 추가
 ):
     """
     마지막 LLM 응답을 단편소설로 저장합니다.
     """
     try:
-        if not ObjectId.is_valid(message_id):
+        if not ObjectId.is_valid(request.message_id):
             raise HTTPException(status_code=400, detail="유효하지 않은 메시지 ID입니다.")
 
         file_id = await llm_service.save_story(
             user_id,
             request.storage_name,
             request.title,
-            message_id # message_id 전달
+            request.message_id # message_id 전달
         )
         return {"status": "success", "message": "결과가 저장되었습니다.", "file_id": file_id}
     except HTTPException as http_ex: # HTTPException 처리 추가
