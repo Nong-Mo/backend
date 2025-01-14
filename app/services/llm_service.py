@@ -85,7 +85,13 @@ class LLMService:
             logger.error(f"Error saving story: {str(e)}")
             raise HTTPException(status_code=500, detail=f"스토리 저장 중 오류가 발생했습니다: {str(e)}")
 
-    async def _save_book_story(self, user_email: str, title: str, story_content: str, last_message: dict):
+    async def _save_book_story(
+        self,
+        user_email: str,
+        title: str,
+        story_content: str,
+        last_message: dict,
+        ):
         """책 보관함용 저장 로직: MP3와 PDF 생성"""
         try:
             user = await self.users_collection.find_one({"email": user_email})
