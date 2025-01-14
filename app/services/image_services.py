@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import datetime
+import asyncio
 from typing import List, Optional, Dict
 from wsgiref.headers import Headers
 
@@ -17,6 +18,7 @@ from app.utils.ocr_util import process_ocr, process_receipt_ocr
 from app.utils.tts_util import TTSUtil
 from app.utils.pdf_util import PDFUtil
 from app.models.image import ImageMetadata, ImageDocument
+from app.core.config import S3_BUCKET_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +142,16 @@ class ImageService:
             )
 
             total_size = 0
-            combined_text = []
             image_paths = []
 
-            for idx, file in enumerate(files):
+            async def process_file(file: UploadFile, idx: int):
+                nonlocal total_size
+
                 content = await file.read()
                 if not content:
                     raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
-
+                
+                # 이미지 변환 처리
                 transformed_content = content
                 if vertices_data and len(vertices_data) > idx and vertices_data[idx]:
                     transformed_content = await self.transform_image(content, vertices_data[idx])
@@ -155,34 +159,63 @@ class ImageService:
                 file_path = os.path.join(upload_dir, file.filename)
                 with open(file_path, "wb") as f:
                     f.write(transformed_content)
-
-                image_paths.append(file_path)
+                
+                image_paths.append((idx, file_path))
                 total_size += len(transformed_content)
 
                 transformed_file = UploadFile(
                     filename=file.filename,
                     file=BytesIO(transformed_content),
-                    headers={"content-type": "image/jpeg"}
+                    headers={"content-type": "image/jped"}
                 )
 
-                text = await process_ocr(transformed_file)
-                combined_text.extend(text)
+                # OCR 처리 진행 
+                ocr_text = await process_ocr(transformed_content)
                 await transformed_file.close()
 
-            final_text = " ".join(combined_text)
-            refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
+                # OCR 결과가 없는 경우 빈 결과 반환
+                if not ocr_text:
+                    return idx, "", None
+                
+                text_to_process = " ".join(ocr_text).strip()
 
-            s3_key = await self.tts_util.convert_text_to_speech(
-                final_text,
-                f"combined_{file_id}",
-                storage_name
+                # TTS 요청
+                if text_to_process:
+                    audio_binary = await self.tts_util._get_audio_from_api(text_to_process)
+                    return idx, text_to_process, audio_binary
+                return idx, "", None
+            
+            # 파일별 작업 비동기 생성
+            tasks = [process_file(file, idx) for idx, file in enumerate(files)]
+            results = await asyncio.gather(*tasks)
+
+            # 결과 정렬 (입력 순서를 보장하기 위해)
+            results.sort(key=lambda x: x[0])
+
+            # 텍스트와 오디오 바이너리 분리
+            combined_text = [result[1] for result in results if result[1]]
+            audio_binaries = [result[2] for result in results if result[2]]
+
+            # 오디오 파일 병합
+            final_audio = await self.tts_util._combine_mp3_files(audio_binaries)
+
+            # S3에 업로드
+            s3_key = f"tts/{file_id}/{title}.mp3"
+            await asyncio.get_event_loop().run_inexecutor(
+                None,
+                lambda: self.tts_util.s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=final_audio,
+                    ContentType='audio/mp3'
+                )
             )
 
             file_info = {
                 "title": title,
                 "filename": f"combined_{file_id}",
                 "s3_key": s3_key,
-                "contents": final_text,
+                "contents": combined_text,
                 "file_size": total_size,
                 "mime_type": "audio/mp3",
                 "is_primary": True
@@ -200,7 +233,7 @@ class ImageService:
                 pdf_result = await self.pdf_util.create_pdf_from_images(
                     user_id=user["_id"],
                     storage_id=storage_id,
-                    image_paths=image_paths,
+                    image_paths=[path for _, path in image_paths],
                     pdf_title=title,
                     primary_file_id=mp3_file_id
                 )
@@ -208,11 +241,13 @@ class ImageService:
             return ImageDocument(
                 title=title,
                 file_id=str(mp3_file_id),
-                processed_files=[ImageMetadata(
+                processed_files=[
+                    ImageMetadata(
                     filename=f"combined_{file_id}",
                     content_type="audio/mp3",
                     size=total_size
-                )],
+                    )
+                ],
                 created_at=datetime.datetime.now(datetime.UTC).isoformat()
             )
 
