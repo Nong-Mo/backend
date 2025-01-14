@@ -189,6 +189,15 @@ class StorageService:
                     status_code=403,
                     detail="You do not have permission to delete this file"
                 )
+            
+            # 보관함의 file_count 감소
+            storage = await self.db.storages.find_one({"_id": file["storage_id"]})
+            if storage:
+                await self.db.storages.update_one(
+                    {"_id": storage["_id"]},
+                    {"$inc": {"file_count": -1}}
+                )
+
 
             self.s3_client.delete_object(
                 Bucket=S3_BUCKET_NAME,
