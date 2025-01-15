@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class ImageService:
-    ALLOWED_STORAGE_NAMES = ["책", "영수증", "굿즈", "필름 사진", "서류", "티켓"]
+    ALLOWED_STORAGE_NAMES = ["영감", "소설", "굿즈", "필름 사진", "서류", "티켓"]
 
     def __init__(self, mongodb_client, llm_service):
         self.db = mongodb_client
@@ -159,7 +159,7 @@ class ImageService:
                 await transformed_file.close()
 
             final_text = " ".join(combined_text)
-            refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
+            #refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
 
             # MP3 생성 및 저장
             s3_key = await self.tts_util.convert_text_to_speech(

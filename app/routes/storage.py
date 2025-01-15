@@ -39,8 +39,8 @@ async def get_storage_detail(
     try:
         # 영어로 된 보관함 이름을 한글로 변환
         storage_name_mapping = {
-            "book": "책",
-            "receipt": "영수증", 
+            "idea": "영감",
+            "novel": "소설", 
             "goods": "굿즈",
             "film": "필름 사진",
             "document": "서류",
