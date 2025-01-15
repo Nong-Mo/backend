@@ -13,7 +13,7 @@ from app.core.config import (
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
     S3_REGION_NAME,
-    S3_BUCKET_NAME
+    S3_BUCKET_NAME, CLOUDFRONT_DOMAIN
 )
 import boto3
 
@@ -115,16 +115,8 @@ class StorageService:
             if not file:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            # 기본 파일 URL 생성
-            file_url = self.s3_client.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': S3_BUCKET_NAME,
-                    'Key': file['s3_key']
-                },
-                ExpiresIn=3600
-            )
-
+            # CloudFront URL로 변경
+            file_url = f"https://{CLOUDFRONT_DOMAIN}/{file['s3_key']}"
             file_type = "audio"
             pdf_url = None
 
@@ -135,22 +127,15 @@ class StorageService:
 
             related_file = None
             if file.get("is_primary"):
-                # primary 파일인 경우 연관된 PDF 찾기 (logging 추가)
-
+                # primary 파일인 경우 연관된 PDF 찾기
                 related_file = await self.db.files.find_one({
                     "primary_file_id": file["_id"],
                     "mime_type": "application/pdf"
                 })
 
                 if related_file:
-                    pdf_url = self.s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={
-                            'Bucket': S3_BUCKET_NAME,
-                            'Key': related_file['s3_key']
-                        },
-                        ExpiresIn=3600
-                    )
+                    pdf_url = f"https://{CLOUDFRONT_DOMAIN}/{related_file['s3_key']}"
+
             elif file.get("primary_file_id"):
                 # secondary 파일인 경우 primary 파일 찾기
                 related_file = await self.db.files.find_one({
@@ -158,14 +143,7 @@ class StorageService:
                 })
                 if related_file:
                     pdf_url = file_url  # 현재 파일이 PDF인 경우
-                    file_url = self.s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={
-                            'Bucket': S3_BUCKET_NAME,
-                            'Key': related_file['s3_key']
-                        },
-                        ExpiresIn=3600
-                    )
+                    file_url = f"https://{CLOUDFRONT_DOMAIN}/{related_file['s3_key']}"
 
             related_file_info = None
             if related_file:
