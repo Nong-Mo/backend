@@ -71,7 +71,7 @@ class LLMService:
 
             story_content = last_message.get("content") # last_message에서 content를 가져옴
 
-            if storage_name == "책":
+            if storage_name == "소설":
                 file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
             elif storage_name == "영수증":
                 file_id = await self._save_receipt_analysis(user_email, title, last_message) # last_message 전달
@@ -100,11 +100,11 @@ class LLMService:
 
             storage = await self.storage_collection.find_one({
                 "user_id": user["_id"],
-                "name": "책"
+                "name": "소설"
             })
 
             if not storage:
-                raise HTTPException(status_code=404, detail="Storage '책' not found")
+                raise HTTPException(status_code=404, detail="Storage '소설' not found")
 
             # 최근 대화 내용 찾기
             last_message = await self.chat_collection.find_one(

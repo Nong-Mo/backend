@@ -15,7 +15,7 @@ class AuthService:
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     # 기본 보관함 목록
-    DEFAULT_STORAGE_NAMES = ["책", "영수증", "굿즈", "필름 사진", "서류", "티켓"]
+    DEFAULT_STORAGE_NAMES = ["영감", "소설", "굿즈", "필름 사진", "서류", "티켓"]
 
     def __init__(self, db: AsyncIOMotorDatabase):
         """
