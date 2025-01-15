@@ -1,8 +1,10 @@
 # app/utils/query_util.py
 
 import json
+import re
 import logging
 import datetime
+import difflib
 from fastapi import HTTPException
 from typing import Dict, Any, List
 from app.models.llm import FileSearchResult
@@ -26,10 +28,62 @@ class QueryProcessor:
     def normalize_filename(self, filename: str) -> str:
         # 따옴표, 공백 제거
         return filename.replace("'", "").replace('"', "").replace(" ", "")
+    
+    def evaluate_snippet(self, snippet: str) -> bool:
+        """
+        스니펫의 품질 평가:
+        - 최소 길이 조건 확인.
+        - 문장부호가 포함된 경우 적합하다고 판단.
+        """
+        return len(snippet) > 15 and any(p in snippet for p in ".!?")
 
-    async def search_file(self, user_id: str, query: str) -> FileSearchResult:
-        """파일을 검색합니다."""
+    async def refine_snippet_with_llm(self, snippet: str, query: str) -> str:
+        """
+        LLM을 사용하여 비문장적 스니펫을 자연스러운 문장으로 보정.
+        """
+        prompt = f"""
+        아래 텍스트는 검색 결과에서 추출된 비문장적 내용입니다. 이를 자연스러운 문장으로 보정해주세요.
+        - 검색어: {query}
+        - 추출된 스니펫: {snippet}
+
+        주의사항:
+        1. 검색어와 맥락을 유지하며 보정하세요.
+        2. 1~2문장으로 구성된 완전한 문장으로 수정하세요.
+        """
+        response = self.model.send_message(prompt)
+        return response.text.strip()
+    
+    async def refine_and_correct_snippets(self, snippets: List[str], query: str) -> List[str]:
+        """
+        주어진 스니펫 리스트를 보정하고 정제합니다.
+        - 비문장 스니펫을 자연스러운 문장으로 수정.
+        - 스니펫에 필요한 경우 앞뒤로 `...`를 추가.
+        """
+        refined_snippets = []
+        for snippet in snippets:
+            if self.evaluate_snippet(snippet):
+                # 스니펫이 적합한 경우, 양 끝에 `...` 추가
+                refined_snippet = f"...{snippet.strip()}..."
+            else:
+                # LLM으로 비문장 보정
+                refined_snippet = await self.refine_snippet_with_llm(snippet, query)
+            refined_snippets.append(refined_snippet)
+        return refined_snippets
+    
+    def extract_snippets(self, text: str, query: str, snippet_length: int = 30, max_snippets: int = 3) -> list:
+        """
+        텍스트에서 query가 등장하는 스니펫을 추출.
+        - snippet_length: 매칭 구문 앞뒤로 몇 글자
+        - max_snippets: 최대 몇 개 스니펫을 추출할지
+        """
+        pattern = re.compile(f'(?i)(.{{0,{snippet_length}}}{re.escape(query)}.{{0,{snippet_length}}})')
+        matches = pattern.findall(text)
+        return matches[:max_snippets]
+
+    async def search_file(self, user_id: str, query: str) -> Dict[str, Any]:
+        """파일을 검색하고, 검색어가 포함된 구문(스니펫)도 함께 반환."""
         try:
+            # 사용자 정보 가져오기
             user = await self.users_collection.find_one({"email": user_id})
             if not user:
                 return {
@@ -38,59 +92,87 @@ class QueryProcessor:
                     "data": None
                 }
 
-            # 파일 제목과 내용에서 검색
+            # 검색 쿼리 작성
             search_query = {
-            "user_id": user["_id"],
-            "$or": [
-                {"title": {"$regex": query, "$options": "i"}},  # 대소문자 무시
-                {"contents": {"$regex": query, "$options": "i"}}  # 내용 검색
+                "user_id": user["_id"],
+                "$or": [
+                    {"title": {"$regex": query, "$options": "i"}},
+                    {"contents": {"$regex": query, "$options": "i"}}
                 ]
             }
 
-
+            # 파일 검색
             files = await self.files_collection.find(search_query).to_list(length=None)
-
-            if files:
-                # 여러 파일이 발견된 경우
-                if len(files) > 1:
-                    file_list = [f"- {file['title']}" for file in files]
+            if not files:
+                # 검색 결과 없음 처리
+                all_titles = await self.files_collection.distinct("title", {"user_id": user["_id"]})
+                close_matches = difflib.get_close_matches(query, all_titles, n=3, cutoff=0.7)
+                if close_matches:
+                    suggested_title = close_matches[0]
                     return {
-                        "type": "file_found",
-                        "message": f"관련된 파일들을 찾았습니다:\n" + "\n".join(file_list),
-                        "data": {
-                            "files": [{
-                                "file_id": str(file["_id"]),
-                                "storage_id": str(file["storage_id"]),
-                                "title": file["title"]
-                            } for file in files]
-                        }
+                        "type": "no_results",
+                        "message": f"'{query}' 대신 '{suggested_title}'(으)로 검색하시겠어요?",
+                        "data": {"suggestions": close_matches}
                     }
-                
-                # 단일 파일인 경우
-                file = files[0]
                 return {
-                    "type": "file_found",
-                    "message": f"'{file['title']}' 파일을 찾았습니다.",
-                    "data": {
-                        "file_id": str(file["_id"]),
-                        "storage_id": str(file["storage_id"]),
-                        "title": file["title"]
-                    }
+                    "type": "no_results",
+                    "message": f"'{query}'와 관련된 파일을 찾을 수 없습니다.",
+                    "data": None
                 }
 
-            return {
-                "type": "chat",
-                "message": f"'{query}'와 관련된 파일을 찾을 수 없습니다.",
-                "data": None
-            }
+            # 검색 결과 처리
+            result_data = []
+            for file in files:
+                content = file.get("contents", "")
+                if not isinstance(content, str):
+                    content = str(content) if content else ""
+
+                # 스니펫 추출
+                raw_snippets = self.extract_snippets(content, query, snippet_length=30, max_snippets=3)
+                refined_snippets = await self.refine_and_correct_snippets(raw_snippets, query)
+
+                if refined_snippets:
+                    result_data.append({
+                        "file_id": str(file["_id"]),
+                        "title": file.get("title", "제목없음"),
+                        "snippets": refined_snippets
+                    })
+
+            if not result_data:
+                return {
+                    "type": "no_results",
+                    "message": f"'{query}'와 관련된 정확한 내용이 없습니다.",
+                    "data": None
+                }
+
+            # 결과 메시지 구성
+            if len(result_data) == 1:
+                file = result_data[0]
+                message = (
+                    f"'{file['title']}' 파일에서 아래 내용을 찾았습니다:\n\n"
+                    + "\n".join([f"- \"{snippet}\"" for snippet in file["snippets"]])
+                    + "\n\n혹시 이 내용들 중에서 찾으시는 정보가 있으신가요?"
+                )
+            else:
+                message = (
+                    "다음 파일들에서 관련 내용을 찾았습니다:\n"
+                    + "\n".join(
+                        f"- {file['title']}:\n  " + "\n  ".join([f"- \"{snippet}\"" for snippet in file["snippets"]])
+                        for file in result_data
+                    )
+                    + "\n\n어느 파일이 맞는지 선택해주세요."
+                )
+
+            return {"type": "file_found", "message": message, "data": {"files": result_data}}
 
         except Exception as e:
-            logger.error(f"검색 오류: {str(e)}")
+            logger.error(f"[search_file] 검색 오류: {str(e)}", exc_info=True)
             return {
                 "type": "error",
                 "message": "파일 검색 중 오류가 발생했습니다.",
                 "data": None
             }
+
 
     async def save_chat_message(self, user_id: str, role: str, content: str | dict,
                                 message_type: MessageType = MessageType.GENERAL,
@@ -191,87 +273,108 @@ class QueryProcessor:
 
             # 1단계: 사용자 의도 파악 (LLM 프롬프트)
             intention_prompt = f"""
-            사용자의 의도를 파악해주세요.
+            사용자의 메시지에서 의도를 파악하고 적절한 응답 태그를 반환해주세요. 
+            사용자 메시지: "{query}"
+
+            다음 중 하나의 태그를 반환해야 합니다:
+            1. SEARCH: 특정 키워드나 주제를 검색하려는 의도입니다.
+            2. SEQUEL: 특정 파일이나 이야기에 대한 뒷이야기를 요청하는 의도입니다.
+            3. SAVE: 현재 대화 내용을 저장하려는 의도입니다.
+            4. STORY: 창작 소설이나 이야기를 만들어 달라는 의도입니다.
+            5. SUMMARY: 특정 파일에 대한 요약을 요청하는 의도입니다.
+            6. REVIEW: 특정 파일이나 이야기의 서평/감상을 요청하는 의도입니다.
+            7. CHAT: 일반 대화입니다.
+
+            **파일명 처리 규칙**:
+            - 파일명은 따옴표 없이, 가능한 한 간결하게 반환합니다.
+            - 예를 들어, '크래프톤 웨이에서'에서 '크래프톤 웨이'만 추출.
+            - 조사나 불필요한 표현은 제외: "의", "에서", "파일", "내용", "관련" 등.
+
+            **응답 형식 (반드시 아래 형식 중 하나로만 답변하세요)**:
+            - 검색 의도: SEARCH:파일명
+            - 뒷이야기 요청: SEQUEL:파일명
+            - 저장 요청: SAVE
+            - 창작 소설 요청: STORY
+            - 요약 요청: SUMMARY:파일명
+            - 서평 요청: REVIEW:파일명
+            - 일반 대화: CHAT
+
+            **예시**:
+            1. "프로그래밍팀장에 관련된 내용을 찾아줘" → SEARCH:프로그래밍팀장
+            2. "프로그래밍팀장 이야기 이어서 써줘" → SEQUEL:프로그래밍팀장
+            3. "이거 저장해줘" → SAVE
+            4. "창의적인 소설 하나 써줘" → STORY
+            5. "크래프톤 웨이의 중요한 내용을 요약해줘" → SUMMARY:크래프톤 웨이
+            6. "간단한 서평 부탁해" → REVIEW:크래프톤 웨이
+            7. "안녕? 오늘 날씨 어때?" → CHAT
+
+            **주의사항**:
+            1. 불명확한 요청이 오면 가장 적합한 태그를 선택하되, 모호한 요청은 CHAT으로 분류하지 말고 의도적으로 처리.
+            2. 사용자의 입력이 너무 짧아도 의도를 최대한 파악하려 시도하세요.
+            3. 반환 태그는 반드시 응답 형식에 명시된 형태를 준수해야 합니다.
+
             사용자 메시지: {query}
-
-            다음과 같은 경우를 구분하여 판단하세요:
-            1. 파일 검색 의도:
-            - "~~ 찾아줘", "~~ 어디있어?"와 같은 직접적인 요청
-            - "지난번에 저장한 ~~" 처럼 이전 파일을 찾는 경우
-            - "~~ 관련 파일" 처럼 특정 주제의 파일을 찾는 경우
-
-            2. 뒷이야기 요청 의도:
-            - "뒷이야기 써줘", "다음 이야기 들려줘"
-            - "이어서 써줘", "다음 내용 알려줘"
-            - "후속 이야기 만들어줘"
-
-            3. 저장 요청 의도:
-            - "이걸 저장해줘", "저장해줘", "저장" 등의 직접적인 저장 요청
-            - "이 이야기를 저장해줘" 등의 현재 컨텍스트 저장 요청
-            - "이 내용 저장해줄래?" 등의 간접적인 저장 요청
-
-            4. 스토리 창작 의도:
-            - "소설 써줘", "이야기 만들어줘"
-            - "스토리 작성해줘", "글 써줘"
-            - "영감으로 이야기 만들어줘"
-
-            5. 요약/분석 의도:
-            - 파일명이 언급되고 ("크래프톤 웨이", '크래프톤 웨이', 크래프톤 웨이 등)
-            - "중요한 내용", "핵심 내용", "가장 중요한" 등의 표현이 있는 경우
-
-            6. 서평 작성 의도:
-            - "서평", "리뷰", "감상" 등의 단어가 포함된 경우
-            - "100자 이내로" 등 길이 제한과 함께 요청되는 경우
-
-            파일명 처리 규칙:
-            - '크래프톤 웨이', "크래프톤 웨이", 크래프톤 웨이 등의 다양한 형태로 입력된 파일명을 처리
-            - "에서", "의", "파일" 등의 조사나 부가 단어는 제거하고 파일명만 추출
-            
-
-            응답 형식은 반드시 아래 중 하나로만:
-            - 파일 검색이면: SEARCH:파일명
-            - 뒷이야기 요청이면: SEQUEL:파일명
-            - 저장 요청이면: SAVE
-            - 스토리 창작이면: STORY
-            - 요약이면: SUMMARY:파일명
-            - 서평이면: REVIEW:파일명
-            - 위 경우가 아닌 일반 대화면: CHAT
-
-            
-            주의사항:
-            - "서평 작성해줘", "간단한 서평" 등 파일명 없이 서평 요청이 오면
-            이전에 다룬 파일("크래프톤 웨이")에 대한 요청으로 간주합니다.
-            - "200자 이내" 등의 요청도 이전 파일에 대한 서평 요청으로 처리합니다
-
-            예시:
-            - '크래프톤 웨이'에서 중요한 내용 알려줘 -> SUMMARY:크래프톤 웨이
-            - 이어서 서평 작성해줘 -> REVIEW:크래프톤 웨이
-            - 간단한 서평 부탁해 -> REVIEW:크래프톤 웨이
-
             """
 
             # 의도 파악하기
             intention_response = chat.send_message(intention_prompt)
             logger.debug(f"[Intention Response] {intention_response.text}")
 
-            # 2단계: 의도별 처리
-            # (2-1) 파일 검색
+            # 의도별 처리
             if intention_response.text.startswith("SEARCH:"):
                 search_keyword = intention_response.text.split("SEARCH:", 1)[1].strip()
                 search_result = await self.search_file(user_id, search_keyword)
 
-                # 히스토리 저장 (response.text --> 여기서는 search_result["message"] 사용)
+                if search_result["type"] == "file_found":
+                    # 검색 결과를 LLM에 전달하여 사용자 메시지 생성
+                    file_data = search_result["data"]
+                    if "files" in file_data:
+                        # 다중 파일 결과
+                        formatted_files = "\n".join([
+                            f"파일 제목: {file['title']}\n발췌 내용:\n" + "\n".join([f"- {snippet}" for snippet in file['snippets']])
+                            for file in file_data['files']
+                        ])
+                        llm_prompt = f"""
+                        사용자가 '{search_keyword}'를 검색했으며, 다음 파일들에서 관련 내용을 찾았습니다:
+                        
+                        {formatted_files}
+                        
+                        각 파일의 제목과 발췌 내용을 유지하며 사용자에게 제공하세요:
+                        1. 각 파일 제목과 발췌 내용을 그대로 보여주세요.
+                        2. 사용자에게 이 파일들 중 찾으시는 내용이 있는지 부드럽게 물어보세요.
+                        3. 메시지 길이는 3~5문장 내외로 작성하세요.
+                        """
+                    else:
+                        # 단일 파일 결과
+                        title = file_data.get("title", "")
+                        snippets = file_data.get("snippets", [])
+                        formatted_snippets = "\n".join([f"- {snippet}" for snippet in snippets])
+                        llm_prompt = f"""
+                        사용자가 '{search_keyword}'를 검색했으며, 파일 '{title}'에서 다음 내용을 찾았습니다:
+                        
+                        발췌된 내용:
+                        {formatted_snippets}
+                        
+                        1. 발췌 내용을 정확히 전달하세요.
+                        2. 사용자에게 '이 책이 맞습니까?'라고 부드럽게 질문하세요.
+                        3. 메시지 길이는 3~5문장 내외로 작성하세요.
+                        """
+                    refined_message = chat.send_message(llm_prompt).text.strip()
+                    search_result["message"] = refined_message
+
+                elif search_result["type"] == "no_results":
+                    search_result["message"] = (
+                        f"'{search_keyword}'와 관련된 파일을 찾을 수 없습니다. "
+                        f"다른 키워드로 검색하거나 정확히 입력해주세요."
+                    )
+
+                # 히스토리 저장
                 if save_to_history:
                     await self.save_chat_message(user_id, "user", query)
-                    await self.save_chat_message(
-                        user_id, 
-                        "model",
-                        search_result["message"],  
-                        MessageType.GENERAL
-                    )
-                
+                    await self.save_chat_message(user_id, "model", search_result["message"], MessageType.GENERAL)
+
                 return search_result
-            
+
             # (2-2) 뒷이야기 요청
             elif intention_response.text.startswith("SEQUEL:"):
                 title = intention_response.text.split("SEQUEL:", 1)[1].strip()
@@ -541,12 +644,15 @@ class QueryProcessor:
                         MessageType.GENERAL
                     )
 
+                
+                # 일반 대화 처리 (분기가 끝나지 않은 경우)
+                logger.warning("[SEARCH HANDLING] Search intent not resolved properly.")
                 return {
                     "type": "chat",
-                    "message": response.text,
+                    "message": "의도 처리 중 문제가 발생했습니다. 다시 시도해주세요.",
                     "data": None
                 }
-
+            
 
             # STORY 처리 다음에, 일반 대화 처리 전에 아래 코드들을 추가
 

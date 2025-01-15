@@ -1,5 +1,5 @@
 # app/routes/llm.py
-from fastapi import APIRouter, Depends, Body, Query, HTTPException
+from fastapi import APIRouter, Depends, Body, Query, HTTPException, logger
 from app.services.llm_service import LLMService
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.database import get_database
