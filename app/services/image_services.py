@@ -159,7 +159,7 @@ class ImageService:
                 await transformed_file.close()
 
             final_text = " ".join(combined_text)
-            refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
+            #refined_text = await self.llm_service.process_query(user_id, final_text, save_to_history=False)
 
             # MP3 생성 및 저장
             s3_key = await self.tts_util.convert_text_to_speech(
