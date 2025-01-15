@@ -65,6 +65,7 @@ class ImageService:
             "file_size": file_info["file_size"],
             "mime_type": file_info["mime_type"],
             "created_at": now,
+            "recented_at": now,
             "updated_at": now,
             "is_primary": file_info.get("is_primary", False),
             "primary_file_id": file_info.get("primary_file_id", None)
