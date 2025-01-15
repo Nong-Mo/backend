@@ -53,6 +53,23 @@ class QueryProcessor:
         response = self.model.send_message(prompt)
         return response.text.strip()
     
+    async def refine_and_correct_snippets(self, snippets: List[str], query: str) -> List[str]:
+        """
+        주어진 스니펫 리스트를 보정하고 정제합니다.
+        - 비문장 스니펫을 자연스러운 문장으로 수정.
+        - 스니펫에 필요한 경우 앞뒤로 `...`를 추가.
+        """
+        refined_snippets = []
+        for snippet in snippets:
+            if self.evaluate_snippet(snippet):
+                # 스니펫이 적합한 경우, 양 끝에 `...` 추가
+                refined_snippet = f"...{snippet.strip()}..."
+            else:
+                # LLM으로 비문장 보정
+                refined_snippet = await self.refine_snippet_with_llm(snippet, query)
+            refined_snippets.append(refined_snippet)
+        return refined_snippets
+    
     def extract_snippets(self, text: str, query: str, snippet_length: int = 30, max_snippets: int = 3) -> list:
         """
         텍스트에서 query가 등장하는 스니펫을 추출.
