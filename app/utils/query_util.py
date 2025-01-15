@@ -192,41 +192,70 @@ class QueryProcessor:
 
     def classify_intention_once(self, user_query: str) -> str:
         """
-        (1회성) 사용자 메시지를 Google Generative AI에 보냄
-        -> model="gemini-2.0-flash-exp" 등, generate_text(...) 함수로 태그만 분류해옴
+        사용자 메시지를 분석해 단 하나의 의도만을 정확히 분류합니다.
         """
-        prompt = f"""
-        사용자 메시지를 보고, 다음 중 하나만 *그대로* 출력하세요:
+        # 공통 설정
+        search_keywords = ["찾아", "검색", "알려줘"]
+        operations = {
+            "분석": "ANALYSIS",
+            "요약": "SUMMARY",
+            "서평": "REVIEW",
+            "블로그": "BLOG",
+        }
+        story_keywords = ["스토리", "이야기", "소설"]
+        skip_words = [
+            "좀", "해줘", "주세요", "해", "을", "를", "가지고",
+            "작성", "으로", "로", "에", "관련", "내용", "에서", "에 대해", "의"
+        ]
+        file_extensions = [".txt", ".pdf", ".docx"]
 
-        1) SEARCH:파일명
-        2) SEQUEL:파일명
-        3) SAVE
-        4) STORY
-        5) SUMMARY:파일명
-        6) ANALYSIS:파일명
-        7) REVIEW:파일명
-        8) CHAT
+        def extract_main_subject(user_query: str, skip_words: list) -> str:
+            """주요 대상을 추출"""
+            # 문장을 단어로 분리하고 조사와 불용어를 제외
+            words = [
+                word.strip()
+                for word in re.split(r"[ ,]", user_query)
+                if word and word not in skip_words
+            ]
+            return words[0] if words else ""
 
-        [규칙]
-        - 딱 위 형식 그대로만 출력하세요. 다른 말은 일절 하지 마세요.
-        - 파일명 추출 시, 불필요한 조사('에서', '파일', '관련' 등) 제거.
-        - 파일명이 없으면 CHAT으로 처리.
+        # 1. 검색 의도 확인
+        if any(keyword in user_query for keyword in search_keywords):
+            subject = extract_main_subject(user_query, skip_words + search_keywords)
+            if subject:
+                return f"SEARCH:{subject}"
 
-        사용자 메시지: "{user_query}"
-        """
-        chat_session = genai.ChatSession(model="gemini-2.0-flash-exp")   
-        try:
-            response = chat_session.send_message(prompt=prompt)  # 프롬프트 전달
-        except Exception as e:
-            logger.error(f"Error during intention classification: {e}")
-            return "CHAT"
+        # 2. 파일 관련 작업 확인
+        for op, intent in operations.items():
+            if op in user_query:
+                subject = extract_main_subject(user_query, skip_words + [op])
+                if subject:
+                    return f"{intent}:{subject}"
 
-        if not response or not hasattr(response, "text") or not response.text:
-            return "CHAT"
+        # 3. 저장 의도 확인
+        if "저장" in user_query:
+            return "SAVE"
 
-        raw_text = response.text.strip()  # 응답 텍스트 정리
-        logger.debug(f"[Intention classification result] {raw_text}")
-        return raw_text
+        # 4. 이어쓰기 의도 확인
+        if "이어서" in user_query:
+            words = user_query.split()
+            target_file = ""
+            for i, word in enumerate(words):
+                if "이어서" in word:
+                    if i > 0:
+                        target_file = words[i - 1]
+                    elif i + 1 < len(words):
+                        target_file = words[i + 1]
+                    break
+            if target_file:
+                return f"SEQUEL:{target_file}"
+
+        # 5. 스토리 생성 의도 확인
+        if any(keyword in user_query for keyword in story_keywords):
+            return "STORY"
+
+        # 6. 기본값
+        return "CHAT"
 
     async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True):
         """
@@ -296,8 +325,8 @@ class QueryProcessor:
 
                         {formatted_files}
 
-                        아래 지침:
-                        1. 각 파일 제목과 발췌 내용을 그대로 보여주세요.
+                        지침:
+                        1. 반드시 각 파일 제목과 발췌 내용을 그대로 보여주세요.
                         2. 이 파일들 중 찾으시는 내용이 있는지 물어보세요.
                         3. 메시지 길이는 3~5문장 내외로 작성하세요.
                         """
@@ -450,7 +479,7 @@ class QueryProcessor:
                     await self.save_chat_message(user_id, "model", response.text, MessageType.BOOK_STORY)
 
                 return {
-                    "type": "chat",
+                    "type": "story",
                     "message": response.text,
                     "data": None
                 }
@@ -504,7 +533,7 @@ class QueryProcessor:
                     await self.save_chat_message(user_id, "model", response.text, MessageType.GENERAL)
 
                 return {
-                    "type": "chat",
+                    "type": "summary",
                     "message": response.text,
                     "data": None
                 }
@@ -555,7 +584,7 @@ class QueryProcessor:
                     await self.save_chat_message(user_id, "model", response.text, MessageType.GENERAL)
 
                 return {
-                    "type": "chat",
+                    "type": "review",
                     "message": response.text,
                     "data": None
                 }
@@ -590,6 +619,7 @@ class QueryProcessor:
                 [시스템 역할]
                 당신은 A2D 서비스의 AI 분석 어시스턴트입니다.
                 파일의 내용을 분석하고 요약하여 핵심 메시지를 추출합니다.
+                대괄호[ ] 안에 있는 건 출력하지 않습니다.
 
                 [분석 대상 파일]
                 제목: {file_name}
@@ -636,7 +666,6 @@ class QueryProcessor:
                 - 조직문화: (제목)
                 - 개인성장: (제목)
 
-                [사용자 질문]
                 """
                 response = chat.send_message(review_prompt)
                 if save_to_history:
@@ -644,7 +673,7 @@ class QueryProcessor:
                     await self.save_chat_message(user_id, "model", response.text, MessageType.GENERAL)
 
                 return {
-                    "type": "chat",
+                    "type": "analysis",
                     "message": response.text,
                     "data": None
                 }
@@ -695,7 +724,7 @@ class QueryProcessor:
                     await self.save_chat_message(user_id, "model", response.text, MessageType.GENERAL)
 
                 return {
-                    "type": "chat",
+                    "type": "blog",
                     "message": response.text,
                     "data": None
                 }
