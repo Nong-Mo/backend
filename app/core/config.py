@@ -38,3 +38,6 @@ NCP_TTS_API_URL = "https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts"
 
 # GOOGLE API KEY
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# AWS Cloud Front
+CLOUDFRONT_DOMAIN = os.getenv("CLOUDFRONT_DOMAIN")
