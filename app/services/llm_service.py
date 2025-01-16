@@ -72,9 +72,9 @@ class LLMService:
             story_content = last_message.get("content") # last_message에서 content를 가져옴
 
             if storage_name == "소설":
-                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
+                file_id = await self._save_book_story(user_email, title, story_content, last_message, storage_name) # last_message 전달
             if storage_name == "영감":
-                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
+                file_id = await self._save_book_story(user_email, title, story_content, last_message, storage_name) # last_message 전달
             elif storage_name == "영수증":
                 file_id = await self._save_receipt_analysis(user_email, title, last_message) # last_message 전달
             else:
@@ -93,6 +93,7 @@ class LLMService:
         title: str,
         story_content: str,
         last_message: dict,
+        storage_name: str
         ):
         """책 보관함용 저장 로직: MP3와 PDF 생성"""
         try:
@@ -102,9 +103,9 @@ class LLMService:
 
             storage = await self.storage_collection.find_one({
                 "user_id": user["_id"],
-                "name": title
+                "name": storage_name
             })
-
+            
             if not storage:
                 raise HTTPException(status_code=404, detail="Storage '소설' not found")
 
