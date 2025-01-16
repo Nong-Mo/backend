@@ -64,25 +64,41 @@ class LLMService:
         try:
             if not ObjectId.is_valid(message_id):
                 raise HTTPException(status_code=400, detail="유효하지 않은 메시지 ID입니다.")
-                
+
             last_message = await self.chat_collection.find_one(
                 {"_id": ObjectId(message_id), "user_id": user_email}
             )
 
-            story_content = last_message.get("content") # last_message에서 content를 가져옴
+            if not last_message:
+                raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
+
+            story_content = last_message.get("content")  # last_message에서 content를 가져옴
 
             if storage_name == "소설":
-                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
-            if storage_name == "영감":
-                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
+                file_id = await self._save_book_story(
+                    user_email,
+                    storage_name,  # storage_name 전달
+                    title,
+                    story_content,
+                    last_message
+                )
+            elif storage_name == "영감":
+                file_id = await self._save_book_story(
+                    user_email,
+                    storage_name,  # storage_name 전달
+                    title,
+                    story_content,
+                    last_message
+                )
             elif storage_name == "영수증":
-                file_id = await self._save_receipt_analysis(user_email, title, last_message) # last_message 전달
+                file_id = await self._save_receipt_analysis(user_email, title)
             else:
-                file_id = await self._save_default_story(user_email, storage_name, title) # last_message 전달
+                file_id = await self._save_default_story(user_email, storage_name, title)
+
             return file_id
 
         except HTTPException as http_ex:
-            raise http_ex # HTTPException은 그대로 raise
+            raise http_ex
         except Exception as e:
             logger.error(f"Error saving story: {str(e)}")
             raise HTTPException(status_code=500, detail=f"스토리 저장 중 오류가 발생했습니다: {str(e)}")
@@ -90,6 +106,7 @@ class LLMService:
     async def _save_book_story(
         self,
         user_email: str,
+        storage_name: str,
         title: str,
         story_content: str,
         last_message: dict,
@@ -102,11 +119,11 @@ class LLMService:
 
             storage = await self.storage_collection.find_one({
                 "user_id": user["_id"],
-                "name": title
+                "name": storage_name
             })
 
             if not storage:
-                raise HTTPException(status_code=404, detail="Storage '소설' not found")
+                raise HTTPException(status_code=404, detail=f"Storage '{storage_name}' not found")
 
             # 최근 대화 내용 찾기
             last_message = await self.chat_collection.find_one(
