@@ -60,7 +60,7 @@ class LLMService:
                 detail=f"Failed to start new chat: {str(e)}"
             )
 
-    async def save_story(self, user_email: str, storage_name: str, title: str, message_id: str):
+        async def save_story(self, user_email: str, storage_name: str, title: str, message_id: str):
         try:
             if not ObjectId.is_valid(message_id):
                 raise HTTPException(status_code=400, detail="유효하지 않은 메시지 ID입니다.")
@@ -110,6 +110,7 @@ class LLMService:
         title: str,
         story_content: str,
         last_message: dict,
+        storage_name: str
         ):
         """책 보관함용 저장 로직: MP3와 PDF 생성"""
         try:
@@ -121,7 +122,7 @@ class LLMService:
                 "user_id": user["_id"],
                 "name": storage_name
             })
-
+            
             if not storage:
                 raise HTTPException(status_code=404, detail=f"Storage '{storage_name}' not found")
 
