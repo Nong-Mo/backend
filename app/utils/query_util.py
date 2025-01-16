@@ -257,6 +257,37 @@ class QueryProcessor:
         # 6. 기본값
         return "CHAT"
 
+    async def get_inspiration_contents(self, user_id: str):
+        try:
+            user = await self.users_collection.find_one({"email": user_id})
+            if not user:
+                return []
+
+            # 먼저 "영감" 보관함 찾기
+            inspiration_storage = await self.db.storages.find_one({
+                "user_id": user["_id"],
+                "name": "영감"
+            })
+
+            if not inspiration_storage:
+                return []
+
+            # 해당 보관함의 파일들 조회
+            files = await self.files_collection.find({
+                "storage_id": inspiration_storage["_id"]
+            }).to_list(length=None)
+
+            return [
+                {
+                    "title": file.get("title", ""),
+                    "content": file.get("contents", "")
+                }
+                for file in files
+            ]
+        except Exception as e:
+            logger.error(f"영감 보관함 조회 실패: {str(e)}")
+            return []
+
     async def process_query(self, user_id: str, query: str, new_chat: bool = False, save_to_history: bool = True):
         """
         사용자 질의를 처리:
@@ -440,49 +471,147 @@ class QueryProcessor:
 
             # 4. STORY
             elif intention_text == "STORY":
-                ocr_data = None
-                for msg in reversed(chat_history):
-                    if isinstance(msg.get("content"), dict) and msg.get("type") == "ocr_result":
-                        ocr_data = msg["content"]
-                        break
-                story_prompt = f"""
-                [시스템 역할]
-                당신은 A2D 서비스의 AI 창작 어시스턴트입니다.
-                스캔한 텍스트와 메모에서 영감을 받아 200자 내외의 소설 도입부를 창작합니다.
+                try:
+                    # 1. 영감 보관함 콘텐츠 조회 전에 유효성 검사
+                    user = await self.users_collection.find_one({"email": user_id})
+                    if not user:
+                        return {
+                            "type": "error",
+                            "message": "사용자 정보를 찾을 수 없습니다.",
+                            "data": None
+                        }
 
-                [창작 자료]
-                1. 스캔한 책 발췌문:
-                "그래서 저는 실패가 두렵지 않습니다. 여러분이 일정 수준을 넘어서는 결과물을 반드시 내줄 것이란 믿음이 있습니다.
-                시장에서의 성패는 다른 문제입니다. 실패하더라도 과정이 아름답다면 의미가 있습니다. 최선을 다한다면, 그것이 아름다운 것입니다."
+                    # 2. 영감 보관함 존재 여부 확인
+                    inspiration_storage = await self.db.storages.find_one({
+                        "user_id": user["_id"],
+                        "name": "영감"
+                    })
 
-                2. 화이트보드 메모:
-                "대충은 가장 해로운 벌레다."
+                    if not inspiration_storage:
+                        return {
+                            "type": "error",
+                            "message": "영감 보관함이 없습니다. 먼저 영감 보관함을 생성해주세요.",
+                            "data": None
+                        }
 
-                3. 영감 키워드:
-                - 장병규 의장
-                - 맥주
-                - 에러 코드
+                    # 3. 영감 보관함 콘텐츠 조회
+                    inspiration_contents = await self.get_inspiration_contents(user_id)
 
-                [응답 가이드라인]
-                - 네 알겠습니다 등의 부가 설명 생략
-                - 제목을 포함하여 바로 본문 시작
-                - 세 가지 창작 자료를 모두 활용
-                - "대충은 가장 해로운 벌레다" 문구를 결말에 자연스럽게 포함
-                - 오디오북 전환을 고려한 명확한 문장 구성
+                    if not inspiration_contents:
+                        return {
+                            "type": "error",
+                            "message": "영감 보관함이 비어있습니다. 먼저 몇 가지 영감을 저장해주세요.",
+                            "data": None
+                        }
 
-                [사용자 질문]
-                {query}
-                """
-                response = chat.send_message(story_prompt)
-                if save_to_history:
-                    await self.save_chat_message(user_id, "user", query)
-                    await self.save_chat_message(user_id, "model", response.text, MessageType.BOOK_STORY)
+                    # 4. 콘텐츠 유효성 검사 및 포매팅
+                    valid_contents = []
+                    for i, content in enumerate(inspiration_contents):
+                        if content.get('content') and content.get('title'):
+                            valid_contents.append({
+                                'index': i + 1,
+                                'title': content['title'],
+                                'content': content['content'].strip()
+                            })
 
-                return {
-                    "type": "story",
-                    "message": response.text,
-                    "data": None
-                }
+                    if not valid_contents:
+                        return {
+                            "type": "error",
+                            "message": "영감 보관함에 유효한 내용이 없습니다.",
+                            "data": None
+                        }
+
+                    # 5. 영감 내용을 포맷팅
+                    contents_text = "\n\n".join([
+                        f"[영감 {content['index']}]\n제목: {content['title']}\n내용: {content['content']}"
+                        for content in valid_contents
+                    ])
+
+                    # 6. 개선된 스토리 프롬프트
+                    story_prompt = f"""
+                    [시스템 역할]
+                당신은 A2D 서비스의 '스타트업 스토리텔러'입니다!
+                사용자의 실제 경험과 영감을 스타트업 생존기로 재구성하는 작가입니다.
+                개발자들의 일상을 스타트업의 성장과정에 빗대어 흥미진진하게 풀어내주세요.
+
+                [저장된 실제 내용들]
+                {contents_text}
+
+                [스토리 통합 규칙]
+                1. 스타트업 성장기로 재구성:
+                   - 위 영감 중 최소 3개를 스타트업 스토리로 통합
+                   - 각 영감을 창업과 성장의 이정표로 승화
+                   - 실제 경험을 스타트업의 도전과정으로 승화
+
+                2. 역동적인 서사 구조:
+                   - 도전-위기-극복의 3막 구조
+                   - 영감들이 사업 성장의 터닝포인트로 연결
+                   - 실패와 성공을 통한 성장 스토리
+
+                3. 창의적인 테마:
+                   - 코딩 부트캠프를 '스타트업 인큐베이팅'으로 표현
+                   - 버그와 에러를 시장의 도전과제로 은유
+                   - 개발자들의 일상을 스타트업의 성장통처럼 묘사
+                   - 스타트업 문화를 반영한 재치있는 표현 포함
+
+                4. 긴장감 있는 글쓰기:
+                   - 박진감 넘치는 문체
+                   - 창업 용어와 개발 용어의 적절한 활용
+                   - 독자가 공감할 수 있는 상황 연출
+                   - 적절한 긴장감으로 몰입도 유지
+
+                [캐릭터 설정]
+                - 주인공: MVP를 만들어가는 '신입 개발자'
+                - 동료들: 각자의 전문성을 가진 팀원들
+                  - 완벽주의 CTO
+                  - 비전을 제시하는 CEO
+                  - 열정 넘치는 인턴 개발자
+                - 도전과제: 촉박한 데드라인, 버그, 시장의 요구
+
+                [스토리 가이드]
+                - 개발자의 성장 과정을 스타트업의 성장단계로 표현
+                - 예상치 못한 위기와 창의적인 해결과정
+                - 실수와 실패를 성장의 발판으로 승화
+                - 과도한 직설적 표현은 지양
+
+                [출력 형식]
+                제목: (흥미진진한 스타트업 성장기 제목)
+                (한 줄 띄우기)
+                본문: (500자 내외의 창업 성장 스토리)
+
+                    [사용자 메시지]
+                    {query}
+                    """
+
+                    # 7. LLM 응답 생성 및 저장
+                    response = chat.send_message(story_prompt)
+
+                    if save_to_history:
+                        await self.save_chat_message(user_id, "user", query)
+                        await self.save_chat_message(
+                            user_id,
+                            "model",
+                            response.text,
+                            MessageType.BOOK_STORY,
+                            {"inspiration_count": len(valid_contents)}
+                        )
+
+                    return {
+                        "type": "story",
+                        "message": response.text,
+                        "data": {
+                            "inspiration_count": len(valid_contents),
+                            "used_inspirations": [content['title'] for content in valid_contents[:3]]
+                        }
+                    }
+
+                except Exception as e:
+                    logger.error(f"Error processing story request: {str(e)}")
+                    return {
+                        "type": "error",
+                        "message": f"스토리 생성 중 오류가 발생했습니다: {str(e)}",
+                        "data": None
+                    }
 
             # 5. SUMMARY: 요약
             elif intention_text.startswith("SUMMARY:"):
