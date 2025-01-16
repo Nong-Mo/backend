@@ -73,10 +73,12 @@ class LLMService:
 
             if storage_name == "소설":
                 file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
+            if storage_name == "영감":
+                file_id = await self._save_book_story(user_email, title, story_content, last_message) # last_message 전달
             elif storage_name == "영수증":
                 file_id = await self._save_receipt_analysis(user_email, title, last_message) # last_message 전달
             else:
-                file_id = await self._save_default_story(user_email, storage_name, title, story_content, last_message) # last_message 전달
+                file_id = await self._save_default_story(user_email, storage_name, title) # last_message 전달
             return file_id
 
         except HTTPException as http_ex:
@@ -100,7 +102,7 @@ class LLMService:
 
             storage = await self.storage_collection.find_one({
                 "user_id": user["_id"],
-                "name": "소설"
+                "name": title
             })
 
             if not storage:
@@ -126,12 +128,7 @@ class LLMService:
                     detail="대화 내용을 찾을 수 없습니다. 새로운 대화를 시작해주세요."
                 )
             
-            print("last_message: ", last_message)
-
             story_content = last_message.get("content")
-
-            print("story_content: ",story_content)
-
 
             if not story_content or not isinstance(story_content, str):
                 logger.error(f"Invalid content type in message: {type(story_content)}")
