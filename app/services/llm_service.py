@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 import logging
 from fastapi import HTTPException
@@ -73,6 +74,7 @@ class LLMService:
                 raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
 
             story_content = last_message.get("content")  # last_message에서 content를 가져옴
+            processed_content = await self._process_story_content(story_content)
 
             if storage_name == "소설":
                 file_id = await self._save_book_story(
@@ -87,7 +89,7 @@ class LLMService:
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    story_content,
+                    processed_content,
                     last_message
                 )
             elif storage_name == "영수증":
@@ -102,6 +104,45 @@ class LLMService:
         except Exception as e:
             logger.error(f"Error saving story: {str(e)}")
             raise HTTPException(status_code=500, detail=f"스토리 저장 중 오류가 발생했습니다: {str(e)}")
+        
+    async def _process_story_content(self, content: str) -> str:
+        """스토리 내용 후처리 메서드"""
+        try:
+            if not content:
+                raise ValueError("내용이 비어있습니다.")
+
+            # 1. 마크다운 제목(#) 제거
+            processed = re.sub(r'^#\s+.*$', '', content, flags=re.MULTILINE)
+            
+            # 2. 부제목(##) 제거
+            processed = re.sub(r'^##\s+.*$', '', processed, flags=re.MULTILINE)
+            
+            # 3. 내용 섹션(###) 제거
+            processed = re.sub(r'^###\s+', '', processed, flags=re.MULTILINE)
+            
+            # 4. 모든 볼드 처리(**) 제거하고 내부 텍스트만 보존
+            processed = re.sub(r'\*\*([^*]+)\*\*', r'\1', processed)
+            
+            # 5. 이탤릭(*) 제거
+            processed = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', processed)
+            
+            # 6. 연속된 빈 줄을 하나로 통일
+            processed = re.sub(r'\n\s*\n\s*\n', '\n\n', processed)
+            
+            # 7. 앞뒤 공백 제거
+            processed = processed.strip()
+
+            if not processed:
+                raise ValueError("후처리 후 내용이 비어있습니다.")
+
+            return processed
+                
+        except Exception as e:
+            logger.error(f"스토리 후처리 중 오류 발생: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"스토리 후처리 실패: {str(e)}"
+            )
 
     async def _save_book_story(
         self,
