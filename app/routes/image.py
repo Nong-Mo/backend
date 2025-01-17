@@ -29,7 +29,7 @@ async def options_image_upload():
     return Response(
         status_code=200,
         headers={
-            "Access-Control-Allow-Origin": "http://192.168.0.117:3000",
+            "Access-Control-Allow-Origin": "https://nongmo-a2d.com",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, token, accept, X-Requested-With",
             "Access-Control-Allow-Credentials": "true"
@@ -41,7 +41,7 @@ async def options_receipt_ocr():
     return Response(
         status_code=200,
         headers={
-            "Access-Control-Allow-Origin": "http://192.168.0.117:3000",
+            "Access-Control-Allow-Origin": "https://nongmo-a2d.com",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, token, accept, X-Requested-With",
             "Access-Control-Allow-Credentials": "true"
@@ -140,7 +140,7 @@ async def upload_images(
             content=response.json(),
             media_type="application/json",
             headers={
-                "Access-Control-Allow-Origin": "http://192.168.0.117:3000",
+                "Access-Control-Allow-Origin": "https://nongmo-a2d.com",
                 "Access-Control-Allow-Methods": "POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, Authorization, token",
                 "Access-Control-Allow-Credentials": "true"
@@ -238,7 +238,7 @@ async def process_receipt_ocr(
             content=json.dumps(result),
             media_type="application/json",
             headers={
-                "Access-Control-Allow-Origin": "http://192.168.0.117:3000",
+                "Access-Control-Allow-Origin": "https://nongmo-a2d.com",
                 "Access-Control-Allow-Methods": "POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, Authorization, token",
                 "Access-Control-Allow-Credentials": "true"
