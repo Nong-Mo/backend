@@ -81,7 +81,7 @@ class LLMService:
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    story_content,
+                    processed_content,
                     last_message
                 )
             elif storage_name == "영감":
