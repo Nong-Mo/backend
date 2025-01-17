@@ -202,7 +202,7 @@ class QueryProcessor:
             "서평": "REVIEW",
             "블로그": "BLOG",
         }
-        story_keywords = ["이야기"]
+        story_keywords = ["이야기", "소설"]
         skip_words = [
             "좀", "해줘", "주세요", "해", "을", "를", "가지고",
             "작성", "으로", "로", "에", "관련", "내용", "에서", "에 대해", "의"
