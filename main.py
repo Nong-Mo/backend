@@ -9,17 +9,18 @@ origins = [
     "http://localhost:3000",
     "https://e336-175-195-226-193.ngrok-free.app",
     "http://ec2-54-180-149-98.ap-northeast-2.compute.amazonaws.com",
-    "https://nongmo-a2d.com"
-    # "*" 제거 - allow_credentials=True와 함께 사용할 수 없음
+    "https://nongmo-a2d.com",
+    "http://192.168.0.117:3000"  # 개발 환경 IP
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"]  # 클라이언트에서 접근 가능한 헤더 설정
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # 명시적으로 메소드 나열
+    allow_headers=["Content-Type", "Authorization", "token", "accept", "X-Requested-With"],  # 필요한 헤더만 명시
+    expose_headers=["*"],
+    max_age=3600,  # preflight 요청 캐시 시간 (초)
 )
 
 @app.get("/health")
