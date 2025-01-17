@@ -81,16 +81,14 @@ class LLMService:
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    processed_content,
-                    last_message
+                    processed_content
                 )
             elif storage_name == "영감":
                 file_id = await self._save_book_story(
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    processed_content,
-                    last_message
+                    processed_content
                 )
             elif storage_name == "영수증":
                 file_id = await self._save_receipt_analysis(user_email, title)
