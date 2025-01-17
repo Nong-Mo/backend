@@ -81,14 +81,16 @@ class LLMService:
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    processed_content
+                    processed_content,
+                    last_message
                 )
             elif storage_name == "영감":
                 file_id = await self._save_book_story(
                     user_email,
                     storage_name,  # storage_name 전달
                     title,
-                    processed_content
+                    processed_content,
+                    last_message
                 )
             elif storage_name == "영수증":
                 file_id = await self._save_receipt_analysis(user_email, title)
@@ -163,28 +165,6 @@ class LLMService:
 
             if not storage:
                 raise HTTPException(status_code=404, detail=f"Storage '{storage_name}' not found")
-
-            # 최근 대화 내용 찾기
-            last_message = await self.chat_collection.find_one(
-                {
-                    "user_id": user_email,
-                    "role": "model",
-                    "$or": [
-                        {"message_type": MessageType.BOOK_STORY.value},
-                        {"message_type": MessageType.GENERAL.value}
-                    ]
-                },
-                sort=[("timestamp", -1)]
-            )
-
-            if not last_message:
-                logger.error(f"No message found for user: {user_email}")
-                raise HTTPException(
-                    status_code=404,
-                    detail="대화 내용을 찾을 수 없습니다. 새로운 대화를 시작해주세요."
-                )
-            
-            story_content = last_message.get("content")
 
             if not story_content or not isinstance(story_content, str):
                 logger.error(f"Invalid content type in message: {type(story_content)}")
