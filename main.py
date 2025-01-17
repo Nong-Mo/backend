@@ -4,18 +4,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="AtoD")
 
+# 허용할 origin 목록
+origins = [
+    "http://localhost:3000",
+    "https://e336-175-195-226-193.ngrok-free.app",
+    "http://ec2-54-180-149-98.ap-northeast-2.compute.amazonaws.com",
+    "https://nongmo-a2d.com"
+    # "*" 제거 - allow_credentials=True와 함께 사용할 수 없음
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://e336-175-195-226-193.ngrok-free.app",
-        "http://ec2-54-180-149-98.ap-northeast-2.compute.amazonaws.com",
-        "https://nongmo-a2d.com",
-        "*"
-    ],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # 모든 HTTP 메서드 허용 (POST, GET, OPTIONS 등)
-    allow_headers=["*"],  # 모든 HTTP 헤더 허용
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]  # 클라이언트에서 접근 가능한 헤더 설정
 )
 
 @app.get("/health")
